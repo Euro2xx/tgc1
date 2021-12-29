@@ -2,7 +2,17 @@
 
 # Press Umschalt+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import time, os, sys
+import argparse
+import sys
 
+# User-defined
+
+from model import train
+from config import config_train, directories
 
 def main(name):
     parser = argparse.ArgumentParser()
@@ -17,8 +27,14 @@ def main(name):
 
     args.name = '{}_train_{}'.format(args.name, time.strftime('%d-%m_%Y_%H_%M'))
 
-    # Launch training
-    train(config_train, args)
+    # Launch trainin
+
+    def train(config_train, directories):
+        generator_in_channels = config_train.latent_dim + config_train.num_classes
+        discriminator_in_channels = config_train.num_channels + config_train.num_classes
+        print(generator_in_channels, discriminator_in_channels)
+        train(config_train, args)
+
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
