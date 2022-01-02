@@ -2,6 +2,7 @@
 
 # Press Umschalt+F10 to execute it or replace it with your code.
 # Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+from tensorflow import keras
 import tensorflow as tf
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ import sys
 
 # User-defined
 
-from model import train
+
 from config import config_train, directories
 
 def main(name):
@@ -23,17 +24,13 @@ def main(name):
     # parser.add_argument("-ds", "--dataset", default="cityscapes", help="choice of training dataset. Currently only supports cityscapes/ADE20k", choices=set(("cityscapes", "ADE20k")), type=str)
     parser.add_argument("--training-data-dir", help="directory holding training images")
     parser.add_argument("--test-data-dir", help="directory holding test images")
+    parser.add_argument("--logdir", default="logs")
+    parser.add_argument("--patch-size", default =4, type=int)
+
     args = parser.parse_args()
 
     args.name = '{}_train_{}'.format(args.name, time.strftime('%d-%m_%Y_%H_%M'))
 
-    # Launch trainin
-
-    def train(config_train, directories):
-        generator_in_channels = config_train.latent_dim + config_train.num_classes
-        discriminator_in_channels = config_train.num_channels + config_train.num_classes
-        print(generator_in_channels, discriminator_in_channels)
-        train(config_train, args)
 
 
 # Press the green button in the gutter to run the script.
