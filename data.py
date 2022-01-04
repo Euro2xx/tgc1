@@ -18,7 +18,7 @@ def mnist():
 
     # Create tf.data.Dataset.
     dataset = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
-    dataset = dataset.shuffle(buffer_size=1024).batch(batch_size)
+    dataset = dataset.shuffle(buffer_size=1024).batch(config_train.batch_size)
 
     print(f"Shape of training images: {all_digits.shape}")
     print(f"Shape of training labels: {all_labels.shape}")
@@ -43,3 +43,12 @@ def cifar():
     print(f"Shape of training images: {all_digits.shape}")
     print(f"Shape of training labels: {all_labels.shape}")
 
+    if "dtype" is "train":
+        return x_train, y_train
+
+
+    if "dtype" is "test":
+        return x_test, y_train
+
+    else:
+        return dataset

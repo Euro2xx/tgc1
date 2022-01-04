@@ -5,15 +5,16 @@ from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
-# import imageio
+import imageio
 
+import data
 from model import Discriminator, Generator
 from config import config_train,config_test
-
+from data import cifar
 
 
 class CGanf(keras.Model):
-    def __init__(self,discriminator):
+    def __init__(self, Discriminator, Generator):
         super(CGanf,self).__init__()
         self.Discriminator= Discriminator
         self.Generator = Generator
@@ -23,7 +24,7 @@ class CGanf(keras.Model):
 
     def train_step(self, data):
         # Unpack the data.
-        real_images, one_hot_labels = data
+        real_images, one_hot_labels = data.cifar()
 
         # Add dummy dimensions to the labels so that they can be concatenated with
         # the images. This is for the discriminator.
