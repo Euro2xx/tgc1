@@ -10,7 +10,7 @@ import imageio
 import data
 from model import Discriminator, Generator
 from config import config_train,config_test
-from data import cifar
+
 
 
 class CGanf(keras.Model):
@@ -24,7 +24,9 @@ class CGanf(keras.Model):
 
     def train_step(self, data):
         # Unpack the data.
-        real_images, one_hot_labels = data.cifar()
+        real_images, one_hot_labels = (data.x_train, data.y_train)
+        print(f"Shape of training images: {real_images.shape}")
+        print(f"Shape of training labels: {one_hot_labels.shape}")
 
         # Add dummy dimensions to the labels so that they can be concatenated with
         # the images. This is for the discriminator.

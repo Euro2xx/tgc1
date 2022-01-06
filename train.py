@@ -6,11 +6,10 @@ import tensorflow as tf
 import tensorflow_addons as tfa
 from tensorflow import keras
 from tensorflow.keras.callbacks import TensorBoard
-
 import data
-from data import cifar
 import network
-from network import CGanf
+
+
 
 
 AUTOTUNE = tf.data.experimental.AUTOTUNE
@@ -39,6 +38,7 @@ def main():
     strategy = tf.distribute.MirroredStrategy()
 
     with strategy.scope():
+        print("Start")
         model = network.CGanf(data.cifar(),
             config_train
         )
@@ -50,18 +50,18 @@ def main():
                 learning_rate=config_train.lr, weight_decay=config_train.weight_decay
             )
         )
-
-    model.fit(
-        data.cifar(),
-        validation_data=data.cifar(),
-        epochs=args.epochs,
-        callbacks=[TensorBoard(log_dir=args.logdir, profile_batch=0), ],
-    )
-    model.save_weights(os.path.join(args.logdir, "vit"))
+    print("Validation")
+    # model.fit(
+    #     data.cifar(),
+    #     validation_data=data.cifar(),
+    #     epochs=args.epochs,
+    #     callbacks=[TensorBoard(log_dir=args.logdir, profile_batch=0), ],
+    # )
+    # model.save_weights(os.path.join(args.logdir, "vit"))
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
     main()
 
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+
