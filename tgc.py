@@ -11,24 +11,26 @@ import imageio
 # configs and hyperparameters
 
 batch_size = 64
-num_channels = 1
+num_channels = 3
 num_classes = 10
-image_size = 28
+image_size = 32
 latent_dim = 128
-
+embed_dim= 32
+num_heads=2
+ff_dim=32
 
 # Dataset first we try cifar and mnist
 
 # We'll use all the available examples from both the training and test
 # sets.
-(x_train, y_train), (x_test, y_test) = keras.datasets.mnist.load_data()
+(x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
 all_digits = np.concatenate([x_train, x_test])
 all_labels = np.concatenate([y_train, y_test])
 
 # Scale the pixel values to [0, 1] range, add a channel dimension to
 # the images, and one-hot encode the labels.
 all_digits = all_digits.astype("float32") / 255.0
-all_digits = np.reshape(all_digits, (-1, 28, 28, 1))
+all_digits = np.reshape(all_digits, (-1, 32, 32, 3))
 all_labels = keras.utils.to_categorical(all_labels, 10)
 
 # Create tf.data.Dataset.
@@ -44,11 +46,98 @@ generator_in_channels = latent_dim + num_classes
 discriminator_in_channels = num_channels + num_classes
 print(generator_in_channels, discriminator_in_channels)
 
+#Custom Layers and Blocks
+
+
+#Tokenization latent emb and Pos Emb
+class TokenAndPositionEmbedding(layers.Layer):
+    def __init__(self, maxlen, image_size, embed_dim):
+        super(TokenAndPositionEmbedding, self).__init__()
+        self.token_emb = layers.Embedding(input_dim=image_size, output_dim=embed_dim)
+        self.pos_emb = layers.Embedding(input_dim=maxlen, output_dim=embed_dim)
+
+    def call(self, x):
+        maxlen = tf.shape(x)[-1]
+        positions = tf.range(start=0, limit=maxlen, delta=1)
+        positions = self.pos_emb(positions)
+        x = self.token_emb(x)
+        return x + positions
+
+
+#Transformerblocks
+class TransformerBlock(layers.Layer):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
+        super(TransformerBlock, self).__init__()
+        self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
+        self.ffn = keras.Sequential(
+            [layers.Dense(ff_dim, activation="relu"), layers.Dense(embed_dim),]
+        )
+        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
+        self.dropout1 = layers.Dropout(rate)
+        self.dropout2 = layers.Dropout(rate)
+
+    def call(self, inputs, training):
+        attn_output = self.att(inputs, inputs)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(inputs + attn_output)
+        ffn_output = self.ffn(out1)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        return self.layernorm2(out1 + ffn_output)
+
+
+# Attention conv (optional
+
+# Create the generator.
+generator = keras.Sequential(
+    [
+        # Input images
+        keras.layers.InputLayer((generator_in_channels,)),
+        # Create Patches
+        tf.image.extract_patches(images=
+
+                                 )
+
+        #Tokenization and Embedding
+
+
+        #Get trainable weights
+        layers.Dense(8 * 8 * generator_in_channels),
+        layers.LeakyReLU(alpha=0.2),
+        layers.Dense(8 * 8 * generator_in_channels),
+        layers.LeakyReLU(alpha=0.2),
+        layers.Dense(8 * 8 * generator_in_channels),
+        layers.LeakyReLU(alpha=0.2),
+
+        #Start Transformer Blocks
+
+        layers.TransformerBlock(),
+        layers.TransformerBlock(),
+        layers.TransformerBlock(),
+
+
+
+
+
+
+        #Outputlayer
+        layers.Conv2D(1, (8, 8), padding="same", activation="sigmoid"),
+
+
+    ],
+    name="generator",
+)
+
+
+
+
+
+
 
 # Create the discriminator.
 discriminator = keras.Sequential(
     [
-        keras.layers.InputLayer((28, 28, discriminator_in_channels)),
+        keras.layers.InputLayer((32, 32, discriminator_in_channels)),
         layers.Conv2D(64, (3, 3), strides=(2, 2), padding="same"),
         layers.LeakyReLU(alpha=0.2),
         layers.Conv2D(128, (3, 3), strides=(2, 2), padding="same"),
@@ -59,23 +148,15 @@ discriminator = keras.Sequential(
     name="discriminator",
 )
 
-# Create the generator.
-generator = keras.Sequential(
-    [
-        keras.layers.InputLayer((generator_in_channels,)),
-        # We want to generate 128 + num_classes coefficients to reshape into a
-        # 7x7x(128 + num_classes) map.
-        layers.Dense(7 * 7 * generator_in_channels),
-        layers.LeakyReLU(alpha=0.2),
-        layers.Reshape((7, 7, generator_in_channels)),
-        layers.Conv2DTranspose(128, (4, 4), strides=(2, 2), padding="same"),
-        layers.LeakyReLU(alpha=0.2),
-        layers.Conv2DTranspose(128, (4, 4), strides=(2, 2), padding="same"),
-        layers.LeakyReLU(alpha=0.2),
-        layers.Conv2D(1, (7, 7), padding="same", activation="sigmoid"),
-    ],
-    name="generator",
-)
+
+
+
+
+
+
+
+
+
 
 class ConditionalGAN(keras.Model):
     def __init__(self, discriminator, generator, latent_dim):
@@ -194,33 +275,13 @@ interpolation_noise = tf.repeat(interpolation_noise, repeats=num_interpolation)
 interpolation_noise = tf.reshape(interpolation_noise, (num_interpolation, latent_dim))
 
 
-def interpolate_class(first_number, second_number):
-    # Convert the start and end labels to one-hot encoded vectors.
-    first_label = keras.utils.to_categorical([first_number], num_classes)
-    second_label = keras.utils.to_categorical([second_number], num_classes)
-    first_label = tf.cast(first_label, tf.float32)
-    second_label = tf.cast(second_label, tf.float32)
-
-    # Calculate the interpolation vector between the two labels.
-    percent_second_label = tf.linspace(0, 1, num_interpolation)[:, None]
-    percent_second_label = tf.cast(percent_second_label, tf.float32)
-    interpolation_labels = (
-        first_label * (1 - percent_second_label) + second_label * percent_second_label
-    )
-
-    # Combine the noise and the labels and run inference with the generator.
-    noise_and_labels = tf.concat([interpolation_noise, interpolation_labels], 1)
-    fake = trained_gen.predict(noise_and_labels)
-    return fake
-
 
 start_class = 1  # @param {type:"slider", min:0, max:9, step:1}
 end_class = 5  # @param {type:"slider", min:0, max:9, step:1}
 
-fake_images = interpolate_class(start_class, end_class)
+#fake_images = interpolate_class(start_class, end_class)
 
-fake_images *= 255.0
-converted_images = fake_images.astype(np.uint8)
-converted_images = tf.image.resize(converted_images, (96, 96)).numpy().astype(np.uint8)
-imageio.mimsave("animation.gif", converted_images, fps=1)
-embed.embed_file("animation.gif")
+#fake_images *= 255.0
+#converted_images = fake_images.astype(np.uint8)
+#converted_images = tf.image.resize(converted_images, (96, 96)).numpy().astype(np.uint8)
+
