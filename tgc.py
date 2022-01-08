@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 import imageio
-
+import argparse
 
 # configs and hyperparameters
 
@@ -19,26 +19,46 @@ embed_dim= 32
 num_heads=2
 ff_dim=32
 
-# Dataset first we try cifar and mnist
+#Arguments for Conditions
 
-# We'll use all the available examples from both the training and test
-# sets.
+parser = argparse.ArgumentParser(description="Conditions")
+parser.add_argument("--dataset", default="train", choices=["train", "test"])
+
+
+args = parser.parse_args()
+
+# Dataset first we try cifar and mnist
+#Load Dataset
+
+
 (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
-all_digits = np.concatenate([x_train, x_test])
-all_labels = np.concatenate([y_train, y_test])
 
 # Scale the pixel values to [0, 1] range, add a channel dimension to
 # the images, and one-hot encode the labels.
-all_digits = all_digits.astype("float32") / 255.0
-all_digits = np.reshape(all_digits, (-1, 32, 32, 3))
-all_labels = keras.utils.to_categorical(all_labels, 10)
 
+
+
+#all_digits = np.reshape(all_digits, (-1, 32, 32, 3))
+#
+if "train" in args.dataset:
+    all_digits = x_train.astype("float32") / 255.0
+    #all_digits = x_train
+    all_labels = keras.utils.to_categorical(y_train, 10)
+    dataset_train = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
+
+if "test" in args.dataset:
+    all_digits = x_test.astype("float32") / 255.0
+    all_labels = keras.utils.to_categorical(y_test, 10)
+    dataset = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
 # Create tf.data.Dataset.
-dataset = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
-dataset = dataset.shuffle(buffer_size=1024).batch(batch_size)
+
+
+#dataset = dataset.shuffle(buffer_size=1024).batch(batch_size)
 
 print(f"Shape of training images: {all_digits.shape}")
+#print(f"Shape of training images: {all_digits_test.shape}")
 print(f"Shape of training labels: {all_labels.shape}")
+#print(f"Shape of training labels: {all_labels_test.shape}")
 
 
 # Input channels for G and D
@@ -86,18 +106,42 @@ class TransformerBlock(layers.Layer):
         return self.layernorm2(out1 + ffn_output)
 
 
-# Attention conv (optional
+# Attention conv (optional)
+
+
+
+#Create Patches Layer
+
+class patches(keras.layers.Layer):
+    def __init__(self, alldigits):
+        super(patches, self).__init__()
+
+        self.imagesize = image_size
+        self.alldigits= alldigits
+
+    def build(self, image_size):
+        self.kernel =3
+        self.imagesize=image_size
+
+    def call (self, inputs):
+         return tf.image.extract_patches(images=all_digits,
+                                 sizes=[1,4,4,1],
+                                strides=[1,3,3,1],
+                                 rates=[1,1,1,1],
+                                 padding='VALID')
+
+
+
+
 
 # Create the generator.
 generator = keras.Sequential(
     [
         # Input images
-        keras.layers.InputLayer((generator_in_channels,)),
+        keras.layers.InputLayer((all_digits.shape)),
+
         # Create Patches
-        tf.image.extract_patches(images=
-
-                                 )
-
+        patches(all_digits),
         #Tokenization and Embedding
 
 
@@ -111,9 +155,9 @@ generator = keras.Sequential(
 
         #Start Transformer Blocks
 
-        layers.TransformerBlock(),
-        layers.TransformerBlock(),
-        layers.TransformerBlock(),
+        # layers.TransformerBlock(),
+        # layers.TransformerBlock(),
+        # layers.TransformerBlock(),
 
 
 
@@ -252,27 +296,29 @@ class ConditionalGAN(keras.Model):
         }
 
 cond_gan = ConditionalGAN(
-    discriminator=discriminator, generator=generator, latent_dim=latent_dim
+    discriminator=discriminator, generator=generator, latent_dim=latent_dim,
 )
 cond_gan.compile(
     d_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     g_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True),
+
 )
 
-cond_gan.fit(dataset, epochs=20)
+cond_gan.fit(all_digits, epochs=20)
+cond_gan.summary()
 
 # We first extract the trained generator from our Conditiona GAN.
 trained_gen = cond_gan.generator
-
-# Choose the number of intermediate images that would be generated in
-# between the interpolation + 2 (start and last images).
-num_interpolation = 9  # @param {type:"integer"}
-
-# Sample noise for the interpolation.
-interpolation_noise = tf.random.normal(shape=(1, latent_dim))
-interpolation_noise = tf.repeat(interpolation_noise, repeats=num_interpolation)
-interpolation_noise = tf.reshape(interpolation_noise, (num_interpolation, latent_dim))
+#
+# # Choose the number of intermediate images that would be generated in
+# # between the interpolation + 2 (start and last images).
+# num_interpolation = 9  # @param {type:"integer"}
+#
+# # Sample noise for the interpolation.
+# interpolation_noise = tf.random.normal(shape=(1, latent_dim))
+# interpolation_noise = tf.repeat(interpolation_noise, repeats=num_interpolation)
+# interpolation_noise = tf.reshape(interpolation_noise, (num_interpolation, latent_dim))
 
 
 
