@@ -9,9 +9,8 @@ import numpy as np
 import imageio
 import argparse
 
-# configs and hyperparameters
 
-batch_size = 64
+#Variables and Configs
 num_channels = 3
 num_classes = 10
 image_size = 32
@@ -21,15 +20,14 @@ num_heads = 2
 ff_dim = 32
 dropout = 0.1
 patch_size = 4
+patch_dim= num_channels*patch_size**2
 num_layers= 4
+num_patches=(image_size//patch_size)**2
 mlp_dim = 128
 weight_decay = 1e-4
 lr = 3e-4
-max_length=1024
-patch_dim=num_channels*patch_size**2
+max_len = 1024
 train = True
-
-#Arguments for Conditions
 
 parser = argparse.ArgumentParser(description="Conditions")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
@@ -37,19 +35,8 @@ parser.add_argument("--dataset", default="train", choices=["train", "test"])
 
 args = parser.parse_args()
 
-# Dataset first we try cifar and mnist
-#Load Dataset
-
-
 (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
 
-# Scale the pixel values to [0, 1] range, add a channel dimension to
-# the images, and one-hot encode the labels.
-
-
-
-#all_digits = np.reshape(all_digits, (-1, 32, 32, 3))
-#
 if "train" in args.dataset:
     all_digits = x_train.astype("float32") / 255.0
     #all_digits = x_train
@@ -70,16 +57,23 @@ print(f"Shape of training images: {all_digits.shape}")
 print(f"Shape of training labels: {all_labels.shape}")
 #print(f"Shape of training labels: {all_labels_test.shape}")
 
-
 # Input channels for G and D
 generator_in_channels = latent_dim + num_classes
 discriminator_in_channels = num_channels + num_classes
 print(generator_in_channels, discriminator_in_channels)
+Batch_size=all_digits[0]
 
 #Custom Layers and Blocks
 #Create Patches Method
 
-def extract_patches(self, all_digits, patch_size, patch_dim):
+
+def extract_patches(all_digits, patch_size, patch_dim):
+
+
+
+
+
+
     batch_size = tf.shape(all_digits)[0]
     patches = tf.image.extract_patches(
         images=all_digits,
@@ -91,28 +85,26 @@ def extract_patches(self, all_digits, patch_size, patch_dim):
     patches = tf.reshape(patches, [batch_size, -1, patch_dim])
     return patches
 
-#Tokenization latent emb and Pos Emb
-class TokenAndPositionEmbedding(layers.Layer):
-    def __init__(self, all_digits, mlp_dim, image_size, embed_dim):
+
+# Tokenization latent emb and Pos Emb
+class TokenAndPositionEmbedding(keras.layers.Layer):
+    def __init__(self, patches, embed_dim):
         super(TokenAndPositionEmbedding, self).__init__()
-        self.token_emb = layers.Embedding(input_dim=image_size, output_dim=embed_dim)
-        self.pos_emb = layers.Embedding(input_dim=mlp_dim, output_dim=embed_dim)
-        self.all_digits = all_digits
-        self.embeded_dim = embed_dim
-        self.image_size = image_size
+        self.token_emb = layers.Embedding(input_dim=1024, output_dim=embed_dim)
+        self.pos_emb = layers.Embedding(input_dim=64 , output_dim=embed_dim)
 
 
-    def call(self, all_digits):
-        patches = extract_patches(self.all_digits)
-        patches = keras.layers.Flatten(patches)
+    def call(self, patches):
+
         positions = tf.range(start=0, limit=mlp_dim, delta=1)
         positions = self.pos_emb(positions)
         token_emb = self.token_emb(patches)
         data_prep = token_emb + positions
         return data_prep
 
+
 # MultiHeadSelfAttention
-class MultiHeadSelfAttention(layers.Layer):
+class MultiHeadSelfAttention(keras.layers.Layer):
     def __init__(self, embed_dim, num_heads=8):
         super(MultiHeadSelfAttention, self).__init__()
         self.embed_dim = embed_dim
@@ -158,9 +150,10 @@ class MultiHeadSelfAttention(layers.Layer):
         output = self.combine_heads(concat_attention)
         return output
 
-#Transformerblocks
-class TransformerBlock(layers.Layer):
-    def __init__(self, embed_dim, num_heads, dropout):
+
+# Transformerblock
+class TransformerBlock(keras.layers.Layer):
+    def __init__(self, embed_dim, num_heads, dropout, mlp_dim):
         super(TransformerBlock, self).__init__()
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
         self.mlp = keras.Sequential(
@@ -187,74 +180,62 @@ class TransformerBlock(layers.Layer):
         mlp_output = self.dropout2(mlp_output, training=train)
         return mlp_output + out1
 
-#class AttConv2dtranspose(layers.layer):             #opt
+
+# class AttConv2dtranspose(layers.layer):             #opt
 
 
-
-#class AttConv2d(layers.layer): #opt
-
+# class AttConv2d(layers.layer): #opt
 
 
+# 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
+def Data_prep(all_digits, patch_size, patch_dim, embed_dim, mlp_dim, num_heads):
+    patches = tf.Variable(extract_patches(all_digits, patch_size, patch_dim))
+    print(f"patches{patches.shape}")
+    patches = keras.Sequential([
+            layers.Flatten(input_shape=(64,48))(patches),
+            layers.Dense(64, activation='relu')
+           ])
+    # print(f"patches{patches.shape}")
+    x = TokenAndPositionEmbedding(patches, embed_dim, mlp_dim)
+    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+    print(f"patches{x.shape}")
+    return x
 
 
-
-
-
-
-
-
-
-#1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
-data_prep = TokenAndPositionEmbedding(all_digits, mlp_dim, image_size, embed_dim)
-#2. Step Create the generator.
+# 2. Step Create the generator.
 generator = keras.Sequential(
     [
         # Input after data preparation
-        layers.InputLayer(shape=(max_length,)),
-
-        extract_patches(all_digits, patch_size, patch_dim),
-        TokenAndPositionEmbedding(),
-
-        #Start Transformer Blocks
-
-        TransformerBlock(),
-        #layers.Reshape(None,16,32),
-        TransformerBlock(),
-        #layers.Reshape(None,16,32),
-        TransformerBlock(),
-        #layers.Reshape(None,16,32),
-        #Optional Quantization
-
-
-
-        #Rebuild with Conv
-        layers.Conv2DTranspose(input.shape(512,4,4), (4,4) , padding= "same", activation="lrelu"),
-
-        layers.Conv2DTranspose(256, (4, 4), padding= "same", activation="lrelu"),
+        keras.layers.InputLayer(input_shape=(1024,)),
         layers.BatchNormalization(),
 
-        layers.Conv2DTranspose(128, (4, 4), padding= "same", activation="lrelu"),
+        layers.Dense(4*4*512, use_bias=False),
+        layers.Reshape((4,4,512)),
+
+        # Rebuild with Conv
+        layers.Conv2DTranspose(512, (4, 4), strides=(1,1), padding="same", activation='relu'),
+
+        layers.Conv2DTranspose(256, (4, 4), strides=(2,2), padding="same", activation='relu'),
         layers.BatchNormalization(),
-        layers.Conv2DTranspose(64, (4, 4), padding= "same", activation="lrelu"),
+        #layers.Reshape(None, 256, 8, 8),
+
+        layers.Conv2DTranspose(128, (4, 4), strides=(2,2), padding="same", activation="relu"),
         layers.BatchNormalization(),
-        layers.Conv2DTranspose(32, (4, 4), padding="same", activation="lrelu" ),
+        layers.Conv2DTranspose(64, (4, 4), strides=(2,2), padding="same", activation="relu"),
+        layers.BatchNormalization(),
+        layers.Conv2DTranspose(32, (4, 4), strides=(2,2), padding="same", activation="relu"),
         layers.BatchNormalization(),
 
-        #Outputlayer
+        # Outputlayer
         layers.Conv2D(1, (8, 8), padding="same", activation="sigmoid"),
-
 
     ],
     name="generator",
 )
 
-
-
-
-
-
-
-#3. Step Create the discriminator.
+# 3. Step Create the discriminator.
 discriminator = keras.Sequential(
     [
         keras.layers.InputLayer((32, 32, discriminator_in_channels)),
@@ -269,18 +250,10 @@ discriminator = keras.Sequential(
 )
 
 
-
-
-
-
-
-
-
-
-
 class ConditionalGAN(keras.Model):
-    def __init__(self, discriminator, generator, latent_dim):
+    def __init__(self, discriminator, generator, latent_dim, Data_prep):
         super(ConditionalGAN, self).__init__()
+        self.Data_prep = Data_prep(all_digits, patch_size, patch_dim, embed_dim, mlp_dim, num_heads)
         self.discriminator = discriminator
         self.generator = generator
         self.latent_dim = latent_dim
@@ -320,11 +293,12 @@ class ConditionalGAN(keras.Model):
         )
 
         # Decode the noise (guided by labels) to fake images.
-        #1.Step
-        data_prep = TokenAndPositionEmbedding(all_digits, mlp_dim, image_size, embed_dim)
-        print(f"Shape of prepared data: {data_prep.shape}")
-        #2.Step
-        generated_images = self.generator(random_vector_labels, data_prep)
+        # 1.Step
+        x = Data_prep(all_digits, patch_size, patch_dim, embed_dim, mlp_dim, num_heads)
+
+        #print(f"Shape of prepared data: {data_prep.shape}")
+        # 2.Step
+        generated_images = self.generator(random_vector_labels, x)
 
         # Combine them with real images. Note that we are concatenating the labels
         # with these images here.
@@ -339,7 +313,7 @@ class ConditionalGAN(keras.Model):
             [tf.ones((batch_size, 1)), tf.zeros((batch_size, 1))], axis=0
         )
 
-        #3. Step  Train the discriminator.
+        # 3. Step  Train the discriminator.
         with tf.GradientTape() as tape:
             predictions = self.discriminator(combined_images)
             d_loss = self.loss_fn(labels, predictions)
@@ -375,7 +349,8 @@ class ConditionalGAN(keras.Model):
             "d_loss": self.disc_loss_tracker.result(),
         }
 
-cond_gan = ConditionalGAN(
+
+cond_gan = ConditionalGAN( Data_prep=Data_prep,
     discriminator=discriminator, generator=generator, latent_dim=latent_dim,
 )
 cond_gan.compile(
@@ -385,13 +360,10 @@ cond_gan.compile(
 
 )
 
-cond_gan.fit(all_digits, epochs=20)
-#generator.summary()
-#discriminator.summary()
+cond_gan.fit(Data_prep, epochs=20)
+# generator.summary()
+# discriminator.summary()
 cond_gan.summary()
 
 # We first extract the trained generator from our Conditiona GAN.
 trained_gen = cond_gan.generator
-#
-
-
