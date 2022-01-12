@@ -1,6 +1,7 @@
 from tensorflow import keras
 from tensorflow.keras import layers
 import tensorflow_addons as tfa
+#from keras.models import Sequential
 
 from tensorflow_docs.vis import embed
 import matplotlib.pyplot as plt
@@ -32,7 +33,7 @@ train = True
 parser = argparse.ArgumentParser(description="Conditions")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
 
-
+parser.add_argument("--train", default="train", choices=["train", "test"])
 args = parser.parse_args()
 
 (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
@@ -67,23 +68,7 @@ Batch_size=all_digits[0]
 #Create Patches Method
 
 
-def extract_patches(all_digits, patch_size, patch_dim):
 
-
-
-
-
-
-    batch_size = tf.shape(all_digits)[0]
-    patches = tf.image.extract_patches(
-        images=all_digits,
-        sizes=[1, patch_size, patch_size, 1],
-        strides=[1, patch_size, patch_size, 1],
-        rates=[1, 1, 1, 1],
-        padding="VALID",
-    )
-    patches = tf.reshape(patches, [batch_size, -1, patch_dim])
-    return patches
 
 
 # Tokenization latent emb and Pos Emb
@@ -169,15 +154,15 @@ class TransformerBlock(keras.layers.Layer):
         self.dropout1 = layers.Dropout(dropout)
         self.dropout2 = layers.Dropout(dropout)
 
-    def call(self, inputs, train):
+    def call(self, inputs, training):
         inputs_norm = self.layernorm1(inputs)
         attn_output = self.att(inputs_norm)
-        attn_output = self.dropout1(attn_output, training=train)
+        attn_output = self.dropout1(attn_output, training=training)
         out1 = attn_output + inputs
 
         out1_norm = self.layernorm2(out1)
         mlp_output = self.mlp(out1_norm)
-        mlp_output = self.dropout2(mlp_output, training=train)
+        mlp_output = self.dropout2(mlp_output, training=training)
         return mlp_output + out1
 
 
@@ -188,20 +173,43 @@ class TransformerBlock(keras.layers.Layer):
 
 
 # 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
-def Data_prep(all_digits, patch_size, patch_dim, embed_dim, mlp_dim, num_heads):
-    patches = tf.Variable(extract_patches(all_digits, patch_size, patch_dim))
-    print(f"patches{patches.shape}")
-    patches = keras.Sequential([
-            layers.Flatten(input_shape=(64,48))(patches),
-            layers.Dense(64, activation='relu')
-           ])
-    # print(f"patches{patches.shape}")
-    x = TokenAndPositionEmbedding(patches, embed_dim, mlp_dim)
-    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
-    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
-    x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
-    print(f"patches{x.shape}")
-    return x
+class Data_prep(layers.Layer):
+    def __init__(self, all_digits, patch_size, patch_dim, embed_dim, mlp_dim, num_heads, dropout):
+        super(Data_prep, self).__init__()
+        #self.extract_patches = tf.Variable(extract_patches(all_digits, patch_size, patch_dim))
+        self.TransformerBlock=TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)
+        #print(f"patches{patches.shape}")
+        self.Flatten= keras.Sequential([
+                        layers.Flatten(),
+                        layers.Dense(64, activation='relu')
+        ])
+
+        self.TokenandPositionEmbedding = TokenAndPositionEmbedding(self.patches, embed_dim)
+
+
+
+
+    def extract_patches(self, all_digits, patch_size, patch_dim):
+
+        batch_size = tf.shape(all_digits)[0]
+        patches = tf.image.extract_patches(
+            images=all_digits,
+            sizes=[1, patch_size, patch_size, 1],
+            strides=[1, patch_size, patch_size, 1],
+            rates=[1, 1, 1, 1],
+            padding="VALID",
+        )
+        patches = tf.reshape(patches, [batch_size, -1, patch_dim])
+        return patches
+
+    def call(self, ):
+        batch_size = tf.shape(all_digits)[0]
+        patches = self.extract_patches
+        x = self.Flatten(patches)
+        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        return x
 
 
 # 2. Step Create the generator.
