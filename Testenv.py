@@ -33,6 +33,7 @@ parser = argparse.ArgumentParser(description="Conditions")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
 parser.add_argument("--image_size", default="32")
 parser.add_argument("--train", default="train", choices=["train", "test"])
+parser.add_argument("--dropout", default="0.1")
 args = parser.parse_args()
 
 # (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
@@ -159,23 +160,22 @@ class MultiHeadSelfAttention(keras.layers.Layer):
 
 # Transformerblock
 class TransformerBlock(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads, mlp_dim, dropout=0.1):
+    def __init__(self, embed_dim, num_heads, mlp_dim, dropout):
         super(TransformerBlock, self).__init__()
         print(embed_dim, num_heads, mlp_dim, dropout)
-        self.dropout = dropout
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
         self.mlp = keras.Sequential(
             [
                 keras.layers.Dense(mlp_dim, activation=tfa.activations.gelu),
-                keras.layers.Dropout(self.dropout),
+                keras.layers.Dropout(dropout),
                 keras.layers.Dense(embed_dim),
-                keras.layers.Dropout(self.dropout),
+                keras.layers.Dropout(dropout),
             ]
         )
         self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(self.dropout)
-        self.dropout2 = layers.Dropout(self.dropout)
+        self.dropout1 = layers.Dropout(dropout)
+        self.dropout2 = layers.Dropout(dropout)
 
     def call(self, inputs, training):
         inputs_norm = self.layernorm1(inputs)
@@ -197,15 +197,15 @@ class TransformerBlock(keras.layers.Layer):
 
 # 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
 class Data_prep(layers.Layer):
-    def __init__(self, patch_size, embed_dim, mlp_dim, num_heads,   dropout=0.1, channels=3):
+    def __init__(self, all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels):
         super(Data_prep, self).__init__()
-        print(f"shapes of data_prep{patch_size, embed_dim, num_heads, mlp_dim, dropout, channels}")
+        print(f"shapes of data_prep{all_digits.shape,  patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels}")
         #self.extract_patches = tf.Variable(extract_patches(all_digits, patch_size, patch_dim))
         self.num_patches = (image_size // patch_size) ** 2
-        self.patch_dim = channels * patch_size ** 2
+        self.patch_dim = num_channels * patch_size ** 2
         self.patch_size = patch_size
         self.num_layers = num_layers
-        self.TransformerBlock=TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)
+        self.TransformerBlock=TransformerBlock(embed_dim, num_heads, mlp_dim, dropout)
         #print(f"patches{patches.shape}")
         self.Flatten= keras.Sequential([
                         layers.Flatten(),
@@ -290,7 +290,7 @@ discriminator = keras.Sequential(
 class ConditionalGAN(keras.Model):
     def __init__(self, discriminator, generator, latent_dim, Data_prep):
         super(ConditionalGAN, self).__init__()
-        self.Data_prep = Data_prep(patch_size, embed_dim, mlp_dim, num_heads)
+        self.Data_prep = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
         self.discriminator = discriminator
         self.generator = generator
         self.latent_dim = latent_dim
@@ -331,14 +331,14 @@ class ConditionalGAN(keras.Model):
 
         #
         # 1.Step Data Preparation
-        x = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout)
+        x = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
         #print(f"Shape after preparation{x.shape}")
         #print(f"Shape of random latent vector")
         #2.Step Concanate image information with random vector
         x = tf.concat([random_latent_vectors, x], -1)
 
-        #print(f"Shape of prepared data: {data_prep.shape}")
-
+        print(f"Shape of prepared data: {x.shape}")
+        x = float(x)
         # 3.Step Rebuild the image
         generated_images = self.generator(x)
 
