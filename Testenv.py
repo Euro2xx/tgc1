@@ -98,14 +98,14 @@ class TokenAndPositionEmbedding(keras.layers.Layer):
     def __init__(self, embed_dim):
         super(TokenAndPositionEmbedding, self).__init__()
         self.token_emb = layers.Embedding(input_dim=1024, output_dim=embed_dim)
-        self.pos_emb = layers.Embedding(input_dim=64 , output_dim=embed_dim)
+        self.pos_emb = layers.Embedding(input_dim=64, output_dim=embed_dim)
 
 
-    def call(self, x):
+    def call(self, patches):
 
-        positions = tf.range(start=0, limit=mlp_dim, delta=1)
+        positions = tf.range(start=0, limit=self.patch_dim, delta=1)
         positions = self.pos_emb(positions)
-        token_emb = self.token_emb(x)
+        token_emb = self.token_emb(patches)
         data_prep = token_emb + positions
         return data_prep
 
@@ -114,6 +114,7 @@ class TokenAndPositionEmbedding(keras.layers.Layer):
 class MultiHeadSelfAttention(keras.layers.Layer):
     def __init__(self, embed_dim, num_heads=2):
         super(MultiHeadSelfAttention, self).__init__()
+        print(f"Multiheadattention inputs {embed_dim, num_heads}")
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         if embed_dim % num_heads != 0:
@@ -155,6 +156,7 @@ class MultiHeadSelfAttention(keras.layers.Layer):
             attention, (batch_size, -1, self.embed_dim)
         )
         output = self.combine_heads(concat_attention)
+        print(f"Output  Multiheadselfattention {output}")
         return output
 
 
@@ -186,6 +188,7 @@ class TransformerBlock(keras.layers.Layer):
         out1_norm = self.layernorm2(out1)
         mlp_output = self.mlp(out1_norm)
         mlp_output = self.dropout2(mlp_output, training=training)
+        print(f"Output Transformerblock {mlp_output, out1}")
         return mlp_output + out1
 
 
@@ -196,28 +199,27 @@ class TransformerBlock(keras.layers.Layer):
 
 
 # 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
-class Data_prep(layers.Layer):
+class Data_prep(keras.Model):
     def __init__(self, all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels):
         super(Data_prep, self).__init__()
         print(f"shapes of data_prep{all_digits.shape,  patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels}")
         #self.extract_patches = tf.Variable(extract_patches(all_digits, patch_size, patch_dim))
         self.num_patches = (image_size // patch_size) ** 2
         self.patch_dim = num_channels * patch_size ** 2
-        self.patch_size = patch_size
-        self.num_layers = num_layers
+        #self.num_layers = num_layers
         self.TransformerBlock=TransformerBlock(embed_dim, num_heads, mlp_dim, dropout)
         #print(f"patches{patches.shape}")
-        self.Flatten= keras.Sequential([
+        self.Flatten = keras.Sequential([
                         layers.Flatten(),
                         layers.Dense(64, activation='relu')
-        ])
+                        ])
 
         self.TokenAndPositionEmbedding = TokenAndPositionEmbedding(embed_dim)
 
 
 
 
-    def extract_patches(self, all_digits, patch_size, patch_dim):
+    def extract_patches(self, all_digits, patch_size):
 
         batch_size = tf.shape(all_digits)[0]
         patches = tf.image.extract_patches(
@@ -227,18 +229,38 @@ class Data_prep(layers.Layer):
             rates=[1, 1, 1, 1],
             padding="VALID",
         )
-        patches = tf.reshape(patches, [batch_size, -1, patch_dim])
+        patches = tf.reshape(patches, [batch_size, -1, self.patch_dim])
         return patches
 
     def call(self, all_digits):
-        #batch_size = tf.shape(all_digits)[0]
-        patches = self.extract_patches(all_digits)
-        x = self.Flatten(patches)
-        x = self.TokenAndPositionEmbedding(x)
-        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
-        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
-        x= TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        #print(f"real im images  {real_images.shape}")
+        batch_size = tf.shape(all_digits)[0]
+        patches = self.extract_patches(all_digits, patch_size)
+        print(f"patches {patches.shape}")
+        #x = self.Flatten(patches)
+        #print(f"Shape of prepared data after flatten: {x.shape}")
+        x = self.TokenAndPositionEmbedding(patches)
+        print(f"Shape of prepared data after token and posemb: {x.shape}")
+        x= self.TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        print(f"Shape of prepared data after first transblock: {x.shape}")
+        x= self.TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
+        x= self.TransformerBlock(embed_dim, num_heads, dropout, mlp_dim)(x)
         return x
+
+model = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
+model.compile(
+    optimizer=keras.optimizers.Adam(learning_rate=0.0003),
+
+    loss=keras.losses.BinaryCrossentropy(from_logits=True),
+
+)
+
+model.fit(dataset, epochs=20)
+# generator.summary()
+# discriminator.summary()
+model.summary()
+
+
 
 
 # 2. Step Create the generator.
@@ -287,10 +309,14 @@ discriminator = keras.Sequential(
 )
 
 
+
+
+
+
 class ConditionalGAN(keras.Model):
-    def __init__(self, discriminator, generator, latent_dim, Data_prep):
+    def __init__(self, discriminator, generator, latent_dim, x):
         super(ConditionalGAN, self).__init__()
-        self.Data_prep = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
+        self.Data_prep = x
         self.discriminator = discriminator
         self.generator = generator
         self.latent_dim = latent_dim
@@ -323,7 +349,7 @@ class ConditionalGAN(keras.Model):
 
         # Sample random points in the latent space and concatenate the labels.
         # This is for the generator.
-        batch_size = tf.shape(real_images)[0]
+        #batch_size = tf.shape(all_digits)[0]
         random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
         random_vector_labels = tf.concat(
             [random_latent_vectors, one_hot_labels], axis=1
@@ -331,14 +357,18 @@ class ConditionalGAN(keras.Model):
 
         #
         # 1.Step Data Preparation
-        x = Data_prep(all_digits, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
-        #print(f"Shape after preparation{x.shape}")
+
+        #x = self.Data_prep(real_images, patch_size, mlp_dim, embed_dim,  num_heads, dropout, num_channels)
+        print(f"Shape after preparation{x}")
         #print(f"Shape of random latent vector")
         #2.Step Concanate image information with random vector
-        x = tf.concat([random_latent_vectors, x], -1)
+        #print(f"Shape of prepared data: {x.shape}")
+        #x= tf.convert_to_tensor(x)
+        #print(f"Shape of prepared data: {x.shape}")
+        x = tf.concat([random_vector_labels, x], -1)
 
         print(f"Shape of prepared data: {x.shape}")
-        x = float(x)
+
         # 3.Step Rebuild the image
         generated_images = self.generator(x)
 
