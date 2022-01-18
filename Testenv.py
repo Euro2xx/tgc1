@@ -34,7 +34,7 @@ parser.add_argument("--dataset", default="train", choices=["train", "test"])
 parser.add_argument("--image_size", default="32")
 parser.add_argument("--train", default="train", choices=["train", "test"])
 parser.add_argument("--dropout", default="0.1")
-parser.add_argument("--d-model", default=64, type=int)
+parser.add_argument("--dim_model", default=64, type=int)
 args = parser.parse_args()
 
 #Dataset
@@ -75,20 +75,24 @@ Batch_size=all_digits[0]
 
 # Tokenization latent emb and Pos Emb
 class TokenAndPositionEmbedding(keras.layers.Layer):
-    def __init__(self, patches):
+    def __init__(self, patches, image_size, patch_size, dim_model):
         super(TokenAndPositionEmbedding, self).__init__()
-        self.token_emb = self.add_weight("token_emb", shape=(1, 1, self.d_model))
-        self.pos_emb = self.add_weight("pos_emb", shape=(1, self.num_patches + 1, self.d_model))
+        self.patches = patches
+        num_patches = (image_size // patch_size) ** 2
+        self.dim_model=dim_model
+        self.pos_emb = self.layers.add_weight("pos_emb", shape=(1, num_patches + 1, dim_model))
+        self.token_emb = self.layers.add_weight("token_emb", shape=(1, 1, dim_model))
 
 
-
-    def call(self, patches):
+    def call(self, inputs, training):
 
         positions = tf.range(start=0, limit=self.num_patches, delta=1)
+        print(f"shape of positions1 {positions}")
         positions = self.pos_emb(positions)
-        token_emb = self.token_emb(patches)
-        data_prep = token_emb + positions
-        return data_prep
+        token_emb = self.token_emb(self.patches)
+        x = token_emb + positions
+        return x
+
 
 
 # MultiHeadSelfAttention
@@ -145,7 +149,7 @@ class MultiHeadSelfAttention(keras.layers.Layer):
 class TransformerBlock(keras.layers.Layer):
     def __init__(self, embed_dim, num_heads, mlp_dim, dropout):
         super(TransformerBlock, self).__init__()
-        print(embed_dim, num_heads, mlp_dim, dropout)
+        print(embed_dim,  mlp_dim, num_heads, dropout)
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
         self.mlp = keras.Sequential(
             [
@@ -179,54 +183,32 @@ class TransformerBlock(keras.layers.Layer):
 # class AttConv2d(layers.layer): #opt
 
 
-def extract_patches(real_images, image_size, patch_size, num_channels):
 
-    patch_dim = num_channels * patch_size ** 2
-    batch_size = tf.shape(real_images)[0]
-    patches = tf.image.extract_patches(
-            images=real_images,
-            sizes=[1, patch_size, patch_size, 1],
-            strides=[1, patch_size, patch_size, 1],
-            rates=[1, 1, 1, 1],
-            padding="VALID",
-        )
-    patches = tf.reshape(patches, [batch_size, -1, patch_dim])
-    print(f"end of Patches {patches}")
-    return patches
 
 
 # 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
 class Data_prep(layers.Layer):
-    def __init__(self,  patches, mlp_dim, embed_dim,  num_heads, dropout):
+    def __init__(self, x, mlp_dim, embed_dim,  num_heads, dropout):
         super(Data_prep, self).__init__()
-        self.num_patches = (image_size // patch_size) ** 2
+        #self.TokenAndPositionEmbedding=TokenAndPositionEmbedding(image_size, patch_size, d_model)
 
-
-        #self.TokenAndPositionEmbedding = TokenAndPositionEmbedding(embed_dim, patches)
         self.TransformerBlock=TransformerBlock(mlp_dim, embed_dim,  num_heads, dropout)
         #print(f"patches{patches.shape}")
-        self.Flatten = keras.Sequential([
-                        layers.Flatten(),
-                        layers.Dense(64, activation='relu')
-                        ])
+        #  self.Flatten = keras.Sequential([
+        #                 layers.Flatten(),
+        #                 layers.Dense(64, activation=tfa.activations.gelu)
+        #                 ])
 
-
-
-
-
-
-
-    def call(self, patches, mlp_dim, embed_dim,  num_heads, dropout):
-        #print(f"real im images  {real_images.shape}")
-        print(f"patches in Dataprep {patches}")
-        #x = self.Flatten(patches)
+    def call(self, inputs,x):
+        print(f"real im images  {self.patches.shape}")
+        #print(f"patches in Dataprep {patches}")
+        #x = self.Flatten()
         #print(f"Shape of prepared data after flatten: {x.shape}")
-        x = self.TokenAndPositionEmbedding(patches, self.num_patches, self.d_model)
-        print(f"Shape of prepared data after token and posemb: {x.shape}")
-        x= self.TransformerBlock(mlp_dim, embed_dim, num_heads, dropout)
+        #x = self.TokenAndPositionEmbedding(image_size, patch_size, d_model)(x)
+        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
         print(f"Shape of prepared data after first transblock: {x.shape}")
-        x= self.TransformerBlock(mlp_dim, embed_dim, num_heads, dropout)(x)
-        x= self.TransformerBlock(mlp_dim, embed_dim, num_heads, dropout)(x)
+        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
+        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
         return x
 
 
@@ -234,7 +216,7 @@ class Data_prep(layers.Layer):
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(138,)),
+        keras.layers.InputLayer(input_shape=(512,4,4)),
         #layers.BatchNormalization(),
 
         layers.Dense(4*4*512, use_bias=False),
@@ -281,15 +263,25 @@ discriminator = keras.Sequential(
 
 
 class ConditionalGAN(keras.Model):
-    def __init__(self, Data_prep, discriminator, generator, latent_dim, d_model):
+    def __init__(self, discriminator, generator, latent_dim):
         super(ConditionalGAN, self).__init__()
-        self.Data_prep = Data_prep
+
         self.discriminator = discriminator
         self.generator = generator
         self.latent_dim = latent_dim
         self.gen_loss_tracker = keras.metrics.Mean(name="generator_loss")
         self.disc_loss_tracker = keras.metrics.Mean(name="discriminator_loss")
-        self.d_model = d_model
+
+
+
+        self.mlp_head = keras.Sequential(
+            [
+                layers.LayerNormalization(epsilon=1e-6),
+                layers.Dense(mlp_dim, activation=tfa.activations.gelu),
+                layers.Dropout(dropout),
+                layers.Dense(num_classes),
+            ]
+        )
     @property
     def metrics(self):
         return [self.gen_loss_tracker, self.disc_loss_tracker]
@@ -322,21 +314,23 @@ class ConditionalGAN(keras.Model):
             [random_latent_vectors, one_hot_labels], axis=1
         )
 
+        def extract_patches(real_images, patch_size):
+            patch_dim = num_channels * patch_size ** 2
+            batch_size = tf.shape(real_images)[0]
+            patches = tf.image.extract_patches(
+                images=real_images,
+                sizes=[1, patch_size, patch_size, 1],
+                strides=[1, patch_size, patch_size, 1],
+                rates=[1, 1, 1, 1],
+                padding="VALID",
+            )
+            patches = tf.reshape(patches, [batch_size, -1, patch_dim])
+            print(f"end of Patches {patches}")
+            return patches
         #
-        # 1.Step Data Preparation
-        patches=extract_patches(real_images, image_size, patch_size, num_channels)
-        print(f"Patches {patches}")
-        x = self.Data_prep(patches, mlp_dim, embed_dim,  num_heads, dropout)
-        print(f"Shape after preparation{x}")
-
-        #2.Step Concanate image information with random vector
-
-        x = tf.concat([random_vector_labels, x], -1)
-
-        print(f"Shape of prepared data: {x.shape}")
 
         # 3.Step Rebuild the image
-        generated_images = self.generator(x)
+        generated_images = self.generator(random_vector_labels)
 
         # Combine them with real images. Note that we are concatenating the labels
         # with these images here.
@@ -372,6 +366,27 @@ class ConditionalGAN(keras.Model):
         # Train the generator (note that we should *not* update the weights
         # of the discriminator)!
         with tf.GradientTape() as tape:
+            # 1.Step Data Preparation
+            patches = extract_patches(real_images, patch_size)
+            print(f"Patches {patches}")
+
+
+
+            x   =  TokenAndPositionEmbedding(patches, image_size, patch_size, d_model)
+            print(f"Shape after Tokenandposemb{x}")
+
+
+
+            x   =  Data_prep(x, mlp_dim, embed_dim,  num_heads, dropout)
+            print(f"Shape after preparation{x}")
+
+            #   2.Step Concanate image information with random vector
+
+            x= np.reshape(Batch_size,512,4,4)
+
+
+            print(f"Shape of prepared data: {x.shape}")
+
             fake_images = self.generator(random_vector_labels)
             fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
             predictions = self.discriminator(fake_image_and_labels)
@@ -387,14 +402,13 @@ class ConditionalGAN(keras.Model):
             "d_loss": self.disc_loss_tracker.result(),
         }
 
-cond_gan = ConditionalGAN( Data_prep=Data_prep,
-    discriminator=discriminator, generator=generator, latent_dim=latent_dim, d_model=64
+cond_gan = ConditionalGAN(
+    discriminator=discriminator, generator=generator, latent_dim=latent_dim
 )
 cond_gan.compile(
     d_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     g_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True),
-
 )
 
 cond_gan.fit(dataset, epochs=20)
