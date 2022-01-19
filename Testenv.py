@@ -216,7 +216,7 @@ class Data_prep(layers.Layer):
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(512,4,4)),
+        keras.layers.InputLayer(input_shape=(512,4,4),),
         #layers.BatchNormalization(),
 
         layers.Dense(4*4*512, use_bias=False),
@@ -310,26 +310,15 @@ class ConditionalGAN(keras.Model):
         # This is for the generator.
         #batch_size = tf.shape(all_digits)[0]
         random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
+        print(f"random latent vectors {random_latent_vectors.shape}")
         random_vector_labels = tf.concat(
             [random_latent_vectors, one_hot_labels], axis=1
         )
 
-        def extract_patches(real_images, patch_size):
-            patch_dim = num_channels * patch_size ** 2
-            batch_size = tf.shape(real_images)[0]
-            patches = tf.image.extract_patches(
-                images=real_images,
-                sizes=[1, patch_size, patch_size, 1],
-                strides=[1, patch_size, patch_size, 1],
-                rates=[1, 1, 1, 1],
-                padding="VALID",
-            )
-            patches = tf.reshape(patches, [batch_size, -1, patch_dim])
-            print(f"end of Patches {patches}")
-            return patches
-        #
 
-        # 3.Step Rebuild the image
+
+
+
         generated_images = self.generator(random_vector_labels)
 
         # Combine them with real images. Note that we are concatenating the labels
@@ -363,6 +352,23 @@ class ConditionalGAN(keras.Model):
         # Assemble labels that say "all real images".
         misleading_labels = tf.zeros((batch_size, 1))
 
+
+        #Method for patches
+
+        def extract_patches(real_images, patch_size):
+            patch_dim = num_channels * patch_size ** 2
+            batch_size = tf.shape(real_images)[0]
+            patches = tf.image.extract_patches(
+                images=real_images,
+                sizes=[1, patch_size, patch_size, 1],
+                strides=[1, patch_size, patch_size, 1],
+                rates=[1, 1, 1, 1],
+                padding="VALID",
+            )
+            patches = tf.reshape(patches, [batch_size, -1, patch_dim])
+            print(f"end of Patches {patches}")
+            return patches
+
         # Train the generator (note that we should *not* update the weights
         # of the discriminator)!
         with tf.GradientTape() as tape:
@@ -372,7 +378,7 @@ class ConditionalGAN(keras.Model):
 
 
 
-            x   =  TokenAndPositionEmbedding(patches, image_size, patch_size, d_model)
+            x   =  TokenAndPositionEmbedding(patches, image_size, patch_size, args.dim_model)
             print(f"Shape after Tokenandposemb{x}")
 
 
@@ -381,13 +387,13 @@ class ConditionalGAN(keras.Model):
             print(f"Shape after preparation{x}")
 
             #   2.Step Concanate image information with random vector
-
-            x= np.reshape(Batch_size,512,4,4)
+            #x=tf.concat([random_latent_vectors,x], axis =-1)
+            #x= np.resize(x,(Batch_size,512,4,4))
 
 
             print(f"Shape of prepared data: {x.shape}")
 
-            fake_images = self.generator(random_vector_labels)
+            fake_images = self.generator(x)
             fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
             predictions = self.discriminator(fake_image_and_labels)
             g_loss = self.loss_fn(misleading_labels, predictions)
