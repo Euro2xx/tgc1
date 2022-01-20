@@ -17,7 +17,7 @@ num_channels = 3
 num_classes = 10
 image_size = 32
 latent_dim = 512
-#embed_dim = 32
+embed_dim = 64
 num_heads = 2
 ff_dim = 32
 dropout = 0.1
@@ -33,13 +33,13 @@ dim_model=64
 parser = argparse.ArgumentParser(description="Conditions")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
 parser.add_argument("--image_size", default="32", type=int)
-parser.add_argument("--train", default="train", choices=["train", "test"])
+parser.add_argument("--train", default="training", choices=["train", "test"])
 parser.add_argument("--dropout", default="0.1", type=float)
 parser.add_argument("--dim_model", default=64, type=int)
 parser.add_argument("--patch_size", default=4, type=int)
 parser.add_argument("--latent_dim", default=512, type=int)
 parser.add_argument("--num_heads", default=2, type=int)
-parser.add_argument("--embed_dim", default=32, type=int)
+parser.add_argument("--embed_dim", default=64, type=int)
 parser.add_argument("--mlp_dim", default=128, type=int)
 args = parser.parse_args()
 
@@ -90,11 +90,11 @@ class TokenAndPositionEmbedding(layers.Layer):
         self.pos_emb = layers.Embedding(input_dim=self.patch_dim, output_dim=self.dim_model)
         print(self.pos_emb,self.token_emb)
 
-    def call(self, inputs):
+    def call(self, x):
         #maxlen = tf.shape(x)[0]
         positions = tf.range(start=0, limit=self.patch_dim, delta=1)
         positions = self.pos_emb(positions)
-        x = self.token_emb(inputs)
+        x = self.token_emb(x)
         return x + positions
 
 
@@ -161,7 +161,7 @@ class MultiHeadSelfAttention(layers.Layer):
 
     def separate_heads(self, x, batch_size):
         x = tf.reshape(
-            x, (batch_size, -1, self.num_heads, self.projection_dim)
+            x, (batch_size, -1, num_heads, self.projection_dim)
         )
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
@@ -187,7 +187,7 @@ class MultiHeadSelfAttention(layers.Layer):
 class TransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, mlp_dim, dropout):
         super(TransformerBlock, self).__init__()
-        print(embed_dim,  mlp_dim, num_heads, dropout)
+        print(embed_dim,   num_heads, mlp_dim, dropout)
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
         self.mlp = keras.Sequential(
             [
@@ -202,16 +202,15 @@ class TransformerBlock(layers.Layer):
         self.dropout1 = layers.Dropout(dropout)
         self.dropout2 = layers.Dropout(dropout)
 
-    def call(self, inputs, training):
-        inputs_norm = self.layernorm1(inputs)
-        attn_output = self.att(inputs_norm)
+    def call(self, x, training):
+        inputs_norm = self.layernorm1(x)
+        attn_output = self.att(inputs_norm,embed_dim)
         attn_output = self.dropout1(attn_output, training=training)
-        out1 = attn_output + inputs
+        out1 = attn_output + x
 
         out1_norm = self.layernorm2(out1)
         mlp_output = self.mlp(out1_norm)
         mlp_output = self.dropout2(mlp_output, training=training)
-        print(f"Output Transformerblock {mlp_output, out1}")
         return mlp_output + out1
 
 
@@ -323,11 +322,11 @@ class ConditionalGAN(keras.Model):
         # This is for the generator.
         batch_size = tf.shape(all_digits)[0]
         random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim-10))
-        print(f"random latent vectors {random_latent_vectors.shape}")
+
         random_vector_labels = tf.concat(
             [random_latent_vectors, one_hot_labels], axis=1
         )
-
+        print(f"random latent vectors {random_latent_vectors.shape}")
 
 
 
@@ -390,7 +389,7 @@ class ConditionalGAN(keras.Model):
         patches = extract_patches(real_images, patch_size)
         Tokens = TokenAndPositionEmbedding(patches, image_size, patch_size, dim_model, num_channels)
 
-        Weights = TransformerBlock(Tokens, mlp_dim=args.mlp_dim, embed_dim=args.embed_dim, num_heads=args.num_heads, dropout=args.dropout)
+        Weights = TransformerBlock(embed_dim, num_heads, mlp_dim, dropout)
 
         with tf.GradientTape() as tape:
             # 1.Step Data Preparation
@@ -412,16 +411,26 @@ class ConditionalGAN(keras.Model):
             print(f"x after preparation{x}")
 
             # 2.Step Concanate image information with random vector
-            x=tf.concat([random_latent_vectors,x], axis =-1)
+            #x=keras.Sequential([keras.layers.Flatten(x)])
+            print(f"x after flaten{x}")
+
+            #x=tf.concat([random_latent_vectors,x], axis =-1)
+
+            print(f"x after concat{x}")
+
             x= np.resize(x,(Batch_size,512,4,4))
 
-
+            print(f"Modell after combination information with random latent vector {x}")
 
 
             fake_images = self.generator(x)
+
             fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
+
             predictions = self.discriminator(fake_image_and_labels)
+
             g_loss = self.loss_fn(misleading_labels, predictions)
+
         grads = tape.gradient(g_loss, self.generator.trainable_weights)
         self.g_optimizer.apply_gradients(zip(grads, self.generator.trainable_weights))
 
