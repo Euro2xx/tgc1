@@ -1,3 +1,4 @@
+import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 import tensorflow_addons as tfa
@@ -5,7 +6,7 @@ import tensorflow_addons as tfa
 
 from tensorflow_docs.vis import embed
 import matplotlib.pyplot as plt
-import tensorflow as tf
+
 import numpy as np
 import imageio
 import argparse
@@ -15,26 +16,31 @@ import argparse
 num_channels = 3
 num_classes = 10
 image_size = 32
-latent_dim = 128
-embed_dim = 32
+latent_dim = 512
+#embed_dim = 32
 num_heads = 2
 ff_dim = 32
 dropout = 0.1
 patch_size = 4
-num_layers= 4
+num_layers= 3
 mlp_dim = 128
 weight_decay = 1e-4
 lr = 3e-4
 max_len = 1024
 batch_size=64
-
+dim_model=64
 
 parser = argparse.ArgumentParser(description="Conditions")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
-parser.add_argument("--image_size", default="32")
+parser.add_argument("--image_size", default="32", type=int)
 parser.add_argument("--train", default="train", choices=["train", "test"])
-parser.add_argument("--dropout", default="0.1")
+parser.add_argument("--dropout", default="0.1", type=float)
 parser.add_argument("--dim_model", default=64, type=int)
+parser.add_argument("--patch_size", default=4, type=int)
+parser.add_argument("--latent_dim", default=512, type=int)
+parser.add_argument("--num_heads", default=2, type=int)
+parser.add_argument("--embed_dim", default=32, type=int)
+parser.add_argument("--mlp_dim", default=128, type=int)
 args = parser.parse_args()
 
 #Dataset
@@ -71,37 +77,70 @@ Batch_size=all_digits[0]
 
 
 
+class TokenAndPositionEmbedding(layers.Layer):
+    def __init__(self, patches, image_size, patch_size, dim_model, channels):
+        super(TokenAndPositionEmbedding, self).__init__()
+        print(f"TaPos inputs {patches, image_size,patch_size,dim_model}")
+        self.patches = patches
+        self.num_patches = (image_size // patch_size) ** 2
+        self.patch_dim = channels * patch_size ** 2
+        # patch_dim = channels * patch_size ** 2
+        self.dim_model = dim_model
+        self.token_emb = layers.Embedding(input_dim=self.num_patches, output_dim=self.dim_model)
+        self.pos_emb = layers.Embedding(input_dim=self.patch_dim, output_dim=self.dim_model)
+        print(self.pos_emb,self.token_emb)
+
+    def call(self, inputs):
+        #maxlen = tf.shape(x)[0]
+        positions = tf.range(start=0, limit=self.patch_dim, delta=1)
+        positions = self.pos_emb(positions)
+        x = self.token_emb(inputs)
+        return x + positions
 
 
 # Tokenization latent emb and Pos Emb
-class TokenAndPositionEmbedding(keras.layers.Layer):
-    def __init__(self, patches, image_size, patch_size, dim_model):
-        super(TokenAndPositionEmbedding, self).__init__()
-        self.patches = patches
-        num_patches = (image_size // patch_size) ** 2
-        self.dim_model=dim_model
-        self.pos_emb = self.layers.add_weight("pos_emb", shape=(1, num_patches + 1, dim_model))
-        self.token_emb = self.layers.add_weight("token_emb", shape=(1, 1, dim_model))
-
-
-    def call(self, inputs, training):
-
-        positions = tf.range(start=0, limit=self.num_patches, delta=1)
-        print(f"shape of positions1 {positions}")
-        positions = self.pos_emb(positions)
-        token_emb = self.token_emb(self.patches)
-        x = token_emb + positions
-        return x
+# class TokenAndPositionEmbedding(layers.Layer):
+#     def __init__(self, patches, image_size, patch_size, dim_model):
+#         super(TokenAndPositionEmbedding, self).__init__()
+#         self.patches = patches
+#         self.num_patches = (image_size // patch_size) ** 2
+#         #patch_dim = channels * patch_size ** 2
+#         self.dim_model=dim_model
+#
+#     def build(self, input_shape):
+#         self.pos_emb = self.add_weight("pos_emb",
+#                                        shape=[self.num_patches + 1,
+#                                               self.dim_model],
+#                                        initializer='random_normal',
+#                                        dtype=tf.float32)
+#         self.token_emb = self.add_weight("token_emb",
+#                                          shape=[1,
+#                                                 1,
+#                                                 self.dim_model],
+#                                          initializer='random_normal',
+#                                          dtype=tf.float32)
+#         self.patch_to_embedding = tf.keras.layers.Dense(self.dim_model)
+#
+#     def call(self, inputs):
+#
+#         positions = tf.range(start=0, limit=self.num_patches, delta=1)
+#
+#         positions = self.pos_emb(positions)
+#         token_emb = self.token_emb(self.patches)
+#
+#         x = tf.concat((token_emb, positions), axis=0)
+#         x=self.patch_to_embedding(self.dim_model)(x)
+#         return x
 
 
 
 # MultiHeadSelfAttention
-class MultiHeadSelfAttention(keras.layers.Layer):
-    def __init__(self, embed_dim, num_heads=2):
+class MultiHeadSelfAttention(layers.Layer):
+    def __init__(self, embed_dim, num_heads):
         super(MultiHeadSelfAttention, self).__init__()
+
+
         print(f"Multiheadattention inputs {embed_dim, num_heads}")
-        self.embed_dim = embed_dim
-        self.num_heads = num_heads
         if embed_dim % num_heads != 0:
             raise ValueError(
                 f"embedding dimension = {embed_dim} should be divisible by number of heads = {num_heads}"
@@ -126,7 +165,7 @@ class MultiHeadSelfAttention(keras.layers.Layer):
         )
         return tf.transpose(x, perm=[0, 2, 1, 3])
 
-    def call(self, inputs):
+    def call(self, inputs, embed_dim):
         batch_size = tf.shape(inputs)[0]
         query = self.query_dense(inputs)
         key = self.key_dense(inputs)
@@ -138,15 +177,14 @@ class MultiHeadSelfAttention(keras.layers.Layer):
         attention, weights = self.attention(query, key, value)
         attention = tf.transpose(attention, perm=[0, 2, 1, 3])
         concat_attention = tf.reshape(
-            attention, (batch_size, -1, self.embed_dim)
+            attention, (batch_size, -1, embed_dim)
         )
         output = self.combine_heads(concat_attention)
-        print(f"Output  Multiheadselfattention {output}")
         return output
 
 
 # Transformerblock
-class TransformerBlock(keras.layers.Layer):
+class TransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, mlp_dim, dropout):
         super(TransformerBlock, self).__init__()
         print(embed_dim,  mlp_dim, num_heads, dropout)
@@ -186,37 +224,12 @@ class TransformerBlock(keras.layers.Layer):
 
 
 
-# 1. Step Preparation(Extract patches, Tokenize, Flatten, Concanate it with Pos Embedding)
-class Data_prep(layers.Layer):
-    def __init__(self, x, mlp_dim, embed_dim,  num_heads, dropout):
-        super(Data_prep, self).__init__()
-        #self.TokenAndPositionEmbedding=TokenAndPositionEmbedding(image_size, patch_size, d_model)
-
-        self.TransformerBlock=TransformerBlock(mlp_dim, embed_dim,  num_heads, dropout)
-        #print(f"patches{patches.shape}")
-        #  self.Flatten = keras.Sequential([
-        #                 layers.Flatten(),
-        #                 layers.Dense(64, activation=tfa.activations.gelu)
-        #                 ])
-
-    def call(self, inputs,x):
-        print(f"real im images  {self.patches.shape}")
-        #print(f"patches in Dataprep {patches}")
-        #x = self.Flatten()
-        #print(f"Shape of prepared data after flatten: {x.shape}")
-        #x = self.TokenAndPositionEmbedding(image_size, patch_size, d_model)(x)
-        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
-        print(f"Shape of prepared data after first transblock: {x.shape}")
-        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
-        x= self.TransformerBlock(x, mlp_dim, embed_dim, num_heads, dropout)
-        return x
-
 
 # 2. Step Create the generator.
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(512,4,4),),
+        keras.layers.InputLayer(input_shape=(args.latent_dim,)),
         #layers.BatchNormalization(),
 
         layers.Dense(4*4*512, use_bias=False),
@@ -263,7 +276,7 @@ discriminator = keras.Sequential(
 
 
 class ConditionalGAN(keras.Model):
-    def __init__(self, discriminator, generator, latent_dim):
+    def __init__(self, discriminator, generator,latent_dim):
         super(ConditionalGAN, self).__init__()
 
         self.discriminator = discriminator
@@ -308,8 +321,8 @@ class ConditionalGAN(keras.Model):
 
         # Sample random points in the latent space and concatenate the labels.
         # This is for the generator.
-        #batch_size = tf.shape(all_digits)[0]
-        random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
+        batch_size = tf.shape(all_digits)[0]
+        random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim-10))
         print(f"random latent vectors {random_latent_vectors.shape}")
         random_vector_labels = tf.concat(
             [random_latent_vectors, one_hot_labels], axis=1
@@ -334,7 +347,7 @@ class ConditionalGAN(keras.Model):
             [tf.ones((batch_size, 1)), tf.zeros((batch_size, 1))], axis=0
         )
 
-        # 3. Step  Train the discriminator.
+
         with tf.GradientTape() as tape:
             predictions = self.discriminator(combined_images)
             d_loss = self.loss_fn(labels, predictions)
@@ -369,29 +382,41 @@ class ConditionalGAN(keras.Model):
             print(f"end of Patches {patches}")
             return patches
 
+
         # Train the generator (note that we should *not* update the weights
         # of the discriminator)!
+        # Defining layers
+
+        patches = extract_patches(real_images, patch_size)
+        Tokens = TokenAndPositionEmbedding(patches, image_size, patch_size, dim_model, num_channels)
+
+        Weights = TransformerBlock(Tokens, mlp_dim=args.mlp_dim, embed_dim=args.embed_dim, num_heads=args.num_heads, dropout=args.dropout)
+
         with tf.GradientTape() as tape:
             # 1.Step Data Preparation
-            patches = extract_patches(real_images, patch_size)
-            print(f"Patches {patches}")
 
 
 
-            x   =  TokenAndPositionEmbedding(patches, image_size, patch_size, args.dim_model)
-            print(f"Shape after Tokenandposemb{x}")
+            #Actual Model
+
+            x=patches
+            print(f"Patches {x}")
+            #inputs = layers.Input(shape=(x.shape))
+
+            x=Tokens(x)
+
+            print(f"Tokens {x}")
+
+            x=Weights(x)
+
+            print(f"x after preparation{x}")
+
+            # 2.Step Concanate image information with random vector
+            x=tf.concat([random_latent_vectors,x], axis =-1)
+            x= np.resize(x,(Batch_size,512,4,4))
 
 
 
-            x   =  Data_prep(x, mlp_dim, embed_dim,  num_heads, dropout)
-            print(f"Shape after preparation{x}")
-
-            #   2.Step Concanate image information with random vector
-            #x=tf.concat([random_latent_vectors,x], axis =-1)
-            #x= np.resize(x,(Batch_size,512,4,4))
-
-
-            print(f"Shape of prepared data: {x.shape}")
 
             fake_images = self.generator(x)
             fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
