@@ -3,7 +3,8 @@ from tensorflow import keras
 from tensorflow.keras import layers
 import tensorflow_addons as tfa
 #from keras.models import Sequential
-
+import pickle
+from collections import defaultdict
 from tensorflow_docs.vis import embed
 import matplotlib.pyplot as plt
 
@@ -16,7 +17,7 @@ import argparse
 num_channels = 3
 num_classes = 10
 image_size = 32
-latent_dim = 512
+latent_dim = 128
 embed_dim = 64
 num_heads = 2
 ff_dim = 32
@@ -26,7 +27,7 @@ num_layers= 3
 mlp_dim = 128
 weight_decay = 1e-4
 lr = 3e-4
-max_len = 1024
+#max_len = 1024
 batch_size=64
 dim_model=64
 
@@ -43,9 +44,14 @@ parser.add_argument("--embed_dim", default=64, type=int)
 parser.add_argument("--mlp_dim", default=128, type=int)
 args = parser.parse_args()
 
+
+
+
 #Dataset
 
+
 (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
+
 all_digits = np.concatenate([x_train, x_test])
 all_labels = np.concatenate([y_train, y_test])
 
@@ -61,6 +67,9 @@ dataset = dataset.shuffle(buffer_size=1024).batch(batch_size)
 
 print(f"Shape of training images: {all_digits.shape}")
 print(f"Shape of training labels: {all_labels.shape}")
+
+##Dataset for Vulcan
+
 
 
 
@@ -78,23 +87,27 @@ Batch_size=all_digits[0]
 
 
 class TokenAndPositionEmbedding(layers.Layer):
-    def __init__(self, patches, image_size, patch_size, dim_model, channels):
+    def __init__(self, image_size, patch_size, dim_model, num_channels):
         super(TokenAndPositionEmbedding, self).__init__()
-        print(f"TaPos inputs {patches, image_size,patch_size,dim_model}")
-        self.patches = patches
+        print(f"TaPos inputs {image_size,patch_size,dim_model}")
+        #self.patches = patches
         self.num_patches = (image_size // patch_size) ** 2
-        self.patch_dim = channels * patch_size ** 2
+        self.patch_dim = num_channels * patch_size ** 2
         # patch_dim = channels * patch_size ** 2
         self.dim_model = dim_model
         self.token_emb = layers.Embedding(input_dim=self.num_patches, output_dim=self.dim_model)
         self.pos_emb = layers.Embedding(input_dim=self.patch_dim, output_dim=self.dim_model)
+        self.flatten=keras.Sequential([layers.Flatten()
+
+        ])
         print(self.pos_emb,self.token_emb)
 
     def call(self, x):
-        #maxlen = tf.shape(x)[0]
-        positions = tf.range(start=0, limit=self.patch_dim, delta=1)
+        maxlen = tf.shape(x)[0]
+        positions = tf.range(start=0, limit=maxlen, delta=1)
         positions = self.pos_emb(positions)
         x = self.token_emb(x)
+        x=self.flatten(x)
         return x + positions
 
 
@@ -189,6 +202,7 @@ class TransformerBlock(layers.Layer):
         super(TransformerBlock, self).__init__()
         print(embed_dim,   num_heads, mlp_dim, dropout)
         self.att = MultiHeadSelfAttention(embed_dim, num_heads)
+
         self.mlp = keras.Sequential(
             [
                 keras.layers.Dense(mlp_dim, activation=tfa.activations.gelu),
@@ -203,8 +217,8 @@ class TransformerBlock(layers.Layer):
         self.dropout2 = layers.Dropout(dropout)
 
     def call(self, x, training):
-        inputs_norm = self.layernorm1(x)
-        attn_output = self.att(inputs_norm,embed_dim)
+        #inputs_norm = self.layernorm1(x)
+        attn_output = self.att(x,embed_dim)
         attn_output = self.dropout1(attn_output, training=training)
         out1 = attn_output + x
 
@@ -212,6 +226,38 @@ class TransformerBlock(layers.Layer):
         mlp_output = self.mlp(out1_norm)
         mlp_output = self.dropout2(mlp_output, training=training)
         return mlp_output + out1
+
+
+
+
+class encode(layers.Layer):
+    def __init__(self, w, L=5, temperature =1, scope='image'):
+        super (encode, self).__init__()
+        self.flatten= keras.Sequential([
+
+                layers.Flatten()
+                #layers.Dense(64)
+        ])
+        self.centers=tf.cast(tf.range(-2,3),tf.float32)
+        self.w_stack=tf.stack([w for _ in range(L)])
+        # self.w_hard=tf.cast(tf.argmin(tf.abs(self.w_stack - self.centers), axis=-1), tf.float32) + tf.reduce_min(self.centers)
+        # self.smx = tf.nn.softmax(-1.0 / temperature * tf.abs(self.w_stack - self.centers), dim=-1)
+        # self.w_soft = tf.einsum('ijklm,m->ijkl', self.smx, self.centers)  # w_soft = tf.tensordot(smx, centers, axes=((-1),(0)))
+        # self.w_bar = tf.round(tf.stop_gradient(self.w_hard - self.w_soft) + self.w_soft)
+
+    def call(self, patches):
+
+        x=self.flatten(patches)
+        # x=self.centers(x)
+        # x=self.w_stack(x)
+        # x=self.w_hard(x)
+        # x=self.smx(x)
+        # x=self.w_soft(x)
+        # x=self.w_bar(x)
+
+
+        return x
+
 
 
 # class AttConv2dtranspose(layers.layer):             #opt
@@ -228,10 +274,10 @@ class TransformerBlock(layers.Layer):
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(args.latent_dim,)),
+        keras.layers.InputLayer(input_shape=(8,8,128)),
         #layers.BatchNormalization(),
 
-        layers.Dense(4*4*512, use_bias=False),
+        layers.Dense(128, use_bias=False),
         layers.Reshape((4,4,512)),
 
         # Rebuild with Conv
@@ -321,11 +367,10 @@ class ConditionalGAN(keras.Model):
         # Sample random points in the latent space and concatenate the labels.
         # This is for the generator.
         batch_size = tf.shape(all_digits)[0]
-        random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim-10))
 
-        random_vector_labels = tf.concat(
-            [random_latent_vectors, one_hot_labels], axis=1
-        )
+        random_latent_vectors = tf.random.normal(shape=(batch_size, 8, 8,128))
+
+        random_vector_labels = tf.random.normal(shape=(batch_size, 8, 8,128))
         print(f"random latent vectors {random_latent_vectors.shape}")
 
 
@@ -356,10 +401,10 @@ class ConditionalGAN(keras.Model):
         )
 
         # Sample random points in the latent space.
-        random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
-        random_vector_labels = tf.concat(
-            [random_latent_vectors, one_hot_labels], axis=1
-        )
+        random_latent_vectors = tf.random.normal(shape=(8, 8, dim_model))
+        # random_vector_labels = tf.concat(
+        #     [random_latent_vectors, one_hot_labels], axis=1
+        # )
 
         # Assemble labels that say "all real images".
         misleading_labels = tf.zeros((batch_size, 1))
@@ -367,7 +412,7 @@ class ConditionalGAN(keras.Model):
 
         #Method for patches
 
-        def extract_patches(real_images, patch_size):
+        def extract_patches(real_images,num_channels, patch_size):
             patch_dim = num_channels * patch_size ** 2
             batch_size = tf.shape(real_images)[0]
             patches = tf.image.extract_patches(
@@ -386,8 +431,9 @@ class ConditionalGAN(keras.Model):
         # of the discriminator)!
         # Defining layers
 
-        patches = extract_patches(real_images, patch_size)
-        Tokens = TokenAndPositionEmbedding(patches, image_size, patch_size, dim_model, num_channels)
+        patches = extract_patches(real_images, patch_size, num_channels)
+        Encode=encode(patches)
+        Tokens = TokenAndPositionEmbedding(image_size, patch_size, dim_model, num_channels)
 
         Weights = TransformerBlock(embed_dim, num_heads, mlp_dim, dropout)
 
@@ -401,24 +447,28 @@ class ConditionalGAN(keras.Model):
             x=patches
             print(f"Patches {x}")
             #inputs = layers.Input(shape=(x.shape))
+            x=Encode(x)
+            print(f"flattened and encoded {x}")
 
             x=Tokens(x)
 
             print(f"Tokens {x}")
+            x = tf.concat([x, random_latent_vectors], -1)
+            x = tf.tile(x, [batch_size, 1, 1, 1])
 
-            x=Weights(x)
+            for i in range(num_layers):
+                x=Weights(x)
 
             print(f"x after preparation{x}")
 
             # 2.Step Concanate image information with random vector
             #x=keras.Sequential([keras.layers.Flatten(x)])
-            print(f"x after flaten{x}")
+            #print(f"x after flaten{x}")
 
-            #x=tf.concat([random_latent_vectors,x], axis =-1)
 
             print(f"x after concat{x}")
 
-            x= np.resize(x,(Batch_size,512,4,4))
+            #x= tf.shape(x,(Batch_size,512,4,4))
 
             print(f"Modell after combination information with random latent vector {x}")
 
