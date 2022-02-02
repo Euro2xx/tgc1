@@ -1,5 +1,5 @@
 import sys
-import tokenize
+
 
 import tensorflow as tf
 from tensorflow import keras
@@ -8,6 +8,9 @@ import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 import os
+from skimage.util import img_as_ubyte
+from PIL import Image
+
 
 parser = argparse.ArgumentParser(description="Variables and Configs")
 parser.add_argument("--dataset", default="train", choices=["train", "test"])
@@ -25,7 +28,7 @@ parser.add_argument("--lr", default="3e-4", type=float)
 parser.add_argument("--num_heads", default=2, type=int)
 parser.add_argument("--embed_dim", default=64, type=int)
 parser.add_argument("--mlp_dim", default=128, type=int)
-parser.add_argument("--noise_dim", default=64, type=int)
+parser.add_argument("--noise_dim", default=4096, type=int)
 parser.add_argument("--batch_size", default="64", type=int)
 parser.add_argument("--generator_in_channels", default=256, type=int)
 parser.add_argument("--discriminator_in_channels", default=18, type=int)
@@ -49,13 +52,16 @@ all_labels = keras.utils.to_categorical(all_labels, 10)
 dataset = tf.data.Dataset.from_tensor_slices((all_digits, all_labels))
 dataset = dataset.shuffle(buffer_size=1024).batch(args.batch_size)
 
-#small image set
-pic =all_digits[1],all_digits[2]
+#small subset for computation purposes
+pic         =   x_train[np.isin(y_train, [0,1]).flatten()]
+pic_labels  =   y_train[np.isin(y_train, [0,1]).flatten()]
+sdataset=tf.data.Dataset.from_tensor_slices((pic,pic_labels))
+sdataset = sdataset.shuffle(buffer_size=1024).batch(2)
 pic = tf.convert_to_tensor(pic)
 print(pic.shape)
 #size of one image in bytes
 
-print(f"Size of the image in bytes {sys.getsizeof(all_digits[1].tobytes())}")
+print(f"Size of the image in bytes {sys.getsizeof(all_digits[1])}")
 #show the images
 
 
@@ -164,11 +170,14 @@ class Prep(layers.Layer):
     def __init__(self):
         super(Prep,self).__init__()
         print(f"Inputs Preparation ")
+
         self.prenorm=layers.LayerNormalization()
         self.preflatten=layers.Flatten()
     def call(self, x):
         x=self.prenorm(x)
         x=self.preflatten(x)
+
+
         return x
 
 # VIt Layers
@@ -265,19 +274,22 @@ class TransformerBlock(layers.Layer):
         super(TransformerBlock, self).__init__()
         print(embed_dim,   num_heads, mlp_dim, dropout)
         self.embed_dim=embed_dim
-        self.att = MultiHeadSelfAttention(embed_dim, num_heads)
+        self.num_heads=num_heads
+        self.mlp_dim= mlp_dim
+        self.dropout=dropout
+        self.att = MultiHeadSelfAttention(self.embed_dim, self.num_heads)
         self.mlp = tf.keras.Sequential(
             [
-                layers.Dense(mlp_dim, activation='relu'),
-                layers.Dropout(dropout),
-                layers.Dense(embed_dim),
-                layers.Dropout(dropout),
+                layers.Dense(self.mlp_dim, activation='relu'),
+                layers.Dropout(self.dropout),
+                layers.Dense(self.embed_dim),
+                layers.Dropout(self.dropout),
             ]
         )
         self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
         self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
-        self.dropout1 = layers.Dropout(dropout)
-        self.dropout2 = layers.Dropout(dropout)
+        self.dropout1 = layers.Dropout(self.dropout)
+        self.dropout2 = layers.Dropout(self.dropout)
 
     def call(self, x, training):
         inputs_norm = self.layernorm1(x)
@@ -290,58 +302,93 @@ class TransformerBlock(layers.Layer):
         mlp_output = self.dropout2(mlp_output, training=training)
         return mlp_output + out1
 
-            #Generator
+class Combine(layers.Layer):
+    def __init__(self, noise_dim):
+        super(Combine, self).__init__()
+        self.random_noise=tf.random.normal([1, noise_dim])
+        print(f"random noise in combine {self.random_noise}")
+
+    def call(self,x):
+
+        x=x+self.random_noise
+
+        return x
+
+#Generator
 #Encoder
 
 class generator(layers.Layer):
-    def __init__(self, dim_model, model_dim=[512,256,128,64,32], modelinitializer ='glorot_uniform'):
+    def __init__(self, dim_model, embed_dim, num_heads, mlp_dim, dropout,  noise_dim, model_dim=[512,256,128,64,32], modelinitializer ='glorot_uniform'):
         super(generator, self).__init__()
-        print(f"inputs generator {dim_model}")
+        print(f"inputs generator {dim_model, embed_dim, num_heads, mlp_dim, dropout}")
+
         self.dim_model = dim_model
-        self.Input=layers.InputLayer(input_shape=(4096))
-        self.inputlayer=layers.Dense(4*4*256)
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.mlp_dim=mlp_dim
+        self.dropout=dropout
+        self.Combine=Combine(noise_dim)
+        self.Input=layers.InputLayer(input_shape=(None,64,64))
+        self.D=layers.Dense(4*4*256, use_bias=False)
         self.convBlock1=tf.keras.Sequential([
-                        layers.Conv2DTranspose(model_dim[1], (4,4), strides=(2,2)),
+                        layers.Conv2DTranspose(model_dim[2], (4,4), strides=(2,2), padding='same', use_bias=False ),
                         layers.BatchNormalization(),
                         layers.LeakyReLU()
 
                 ])
 
         self.convBlock2 = tf.keras.Sequential([
-            layers.Conv2DTranspose(model_dim[2], (4, 4), strides=(2, 2)),
+            layers.Conv2DTranspose(model_dim[3], (4, 4), strides=(2, 2), padding='same', use_bias=False, input_shape=(8,8,128)),
             layers.BatchNormalization(),
             layers.LeakyReLU()
-
         ])
         self.convBlock3 = tf.keras.Sequential([
-            layers.Conv2DTranspose(model_dim[3], (4, 4), strides=(2, 2)),
+            layers.Conv2DTranspose(model_dim[4], (4, 4), strides=(2, 2),padding='same', use_bias=False),
             layers.BatchNormalization(),
             layers.LeakyReLU()
 
         ])
         self.convBlock4 = tf.keras.Sequential([
-            layers.Conv2DTranspose(model_dim[4], (4, 4), strides=(2, 2)),
+            layers.Conv2DTranspose(model_dim[4], (4, 4), strides=(2, 2), padding='same', use_bias=False),
             layers.BatchNormalization(),
             layers.LeakyReLU()
 
             ])
-        self.Output=layers.Conv2D(3, (4, 4), strides=(1, 1), padding='same', use_bias=False, activation='tanh')
-
+        self.Output=layers.Conv2D(3, (4, 4), strides=(1, 1), padding='same', use_bias=False, activation='sigmoid')
+        self.Transformerblock=TransformerBlock(self.embed_dim, self.num_heads, self.mlp_dim, self.dropout)
+        self.reshape=layers.Reshape((64,64))
+        self.reshape1=layers.Reshape((4,4,256))
 
     def call(self, x):
         #x= TransformerBlock
-        x=self.Input(x)
-        x= self.inputlayer(x)
-        x= layers.BatchNormalization(x)
-        x=layers.Reshape((x),(4,4,256))
+        B=x.shape[0]
+        x   =   self.Input(x)
+
+        x   =   self.D(x)
+        # Combine the the latent vectors
+        x = self.Combine(x)
+        x = self.reshape(x)
+
+        # x=layers.BatchNormalization(x)
+        #TransformerBlocks
+        x   =   self.Transformerblock(x)
+        x   =   self.Transformerblock(x)
+        x   =   self.Transformerblock(x)
+
+
+
+        x   =   self.reshape1(x)
+
+        #
+
         x=self.convBlock1(x)
-        x=layers.Reshape((x),(8,8,128))
+        # x=layers.Reshape((x),(8,8,128))
         x=self.convBlock2(x)
         x=self.convBlock3(x)
-        x=self.convBlock4(x)
+        #x=self.convBlock4(x)
 
         x = self.Output(x)
-        x=layers.Reshape((x),(32,32,3))
+        # x=layers.Reshape((x),(32,32,3))
 
         return x
 
@@ -379,14 +426,14 @@ class discriminator(layers.Layer):
 
     def call(self, x):
 
-        x = self.inputlay(x)
-        x=self.block(x)
+        x   =   self.inputlay(x)
+        x   =   self.block(x)
 
-        x =self.block1(x)
+        x   =   self.block1(x)
 
-        x=self.block2(x)
-        x=self.block3(x)
-        x= self.Outblock(x)
+        x   =   self.block2(x)
+        x   =   self.block3(x)
+        x   =   self.Outblock(x)
         return x
 
 
@@ -433,8 +480,8 @@ class Compression(keras.Model):
         print(f"end of Patches {patches}")
         return patches
 
-    def train_step(self, pic):
-
+    def train_step(self, data):
+        pic,pic_labels =data
 
 
 
@@ -445,18 +492,42 @@ class Compression(keras.Model):
         batch_size=pic[0]
         patches = self.extract_patches(pic, args.num_channels, args.patch_size)
         embedding = Embedding(args.image_size, args.patch_size, args.dim_model, args.num_channels)
-        random_noise = tf.random.normal([args.batch_size], [args.noise_dim])
         prep = Prep()
-        #Encode the images
-        #print(f"x  as patches {x}")
-        x=embedding(patches)
-        print(f"x as Token and Positions {x}")
-        x=prep(x)
-        #x=tf.concat([x,random_noise], axis=-1)
 
-        gen_images=generator(x)
-        print(f"gen_images")
+        Generator =generator(args.dim_model, args.embed_dim, args.num_heads, args.mlp_dim, args.dropout,  args.noise_dim,  model_dim=[512,256,128,64,32])
+
+
+        #Encode the images
+        with tf.GradientTape() as tape:
+
+            # print(f"x  as patches {x}")
+            x = embedding(patches)
+
+            print(f"x as Token and Positions {x}")
+            x=prep(x)
+
+            print(f"x after prep {x}")
+
+            print(f"size after prep {sys.getsizeof(x)}")
+
+
+            gen_images=Generator(x)
+           #testimages=gen_images.astype(np.uint8)
+
+            print(f"gen_images {gen_images}")
+            # plt.imshow(np.uint8(gen_images[0, :, :, :]*255))
+            # plt.show()
+
+            img_as_ubyte(gen_images)
+
+            print(f"gen_images {gen_images}")
+
+            print(f"pic before combined {pic}")
+
+
+
         combined=tf.concat([gen_images,pic], axis=-1)
+
         labels = tf.concat(
             [tf.ones((batch_size, 1)), tf.zeros((batch_size, 1))], axis=0
         )
@@ -499,7 +570,7 @@ compress.compile(
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True)
                  )
 
-compress.fit(pic, epochs=5)
+compress.fit(sdataset, epochs=5)
 compress.summary()
 
 
