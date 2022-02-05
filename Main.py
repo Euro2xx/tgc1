@@ -1,15 +1,17 @@
 import sys
-
-
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
+#from tensorflow.keras.models import Sequential
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
-import os
-from skimage.util import img_as_ubyte
-from PIL import Image
+#import os
+# from skimage.util import img_as_ubyte
+# from PIL import Image
+from tensorflow.python.ops.numpy_ops import np_config
+
+np_config.enable_numpy_behavior()
 
 
 parser = argparse.ArgumentParser(description="Variables and Configs")
@@ -32,6 +34,7 @@ parser.add_argument("--noise_dim", default=4096, type=int)
 parser.add_argument("--batch_size", default="64", type=int)
 parser.add_argument("--generator_in_channels", default=256, type=int)
 parser.add_argument("--discriminator_in_channels", default=18, type=int)
+
 args = parser.parse_args()
 
 #Loading the Dataset
@@ -55,9 +58,13 @@ dataset = dataset.shuffle(buffer_size=1024).batch(args.batch_size)
 #small subset for computation purposes
 pic         =   x_train[np.isin(y_train, [0,1]).flatten()]
 pic_labels  =   y_train[np.isin(y_train, [0,1]).flatten()]
+
+
 sdataset=tf.data.Dataset.from_tensor_slices((pic,pic_labels))
-sdataset = sdataset.shuffle(buffer_size=1024).batch(2)
+sdataset = sdataset.shuffle(buffer_size=1024).batch(args.batch_size)
+
 pic = tf.convert_to_tensor(pic)
+
 print(pic.shape)
 #size of one image in bytes
 
@@ -69,7 +76,7 @@ print(f"Size of the image in bytes {sys.getsizeof(all_digits[1])}")
 def generateimg(pic):
     fig=plt.figure(figsize=(4,4))
 
-    for i in range(2):
+    for i in range(5):
         plt.subplot(4,4,i+1)
         plt.imshow(pic[i])
         plt.axis('off')
@@ -78,7 +85,9 @@ def generateimg(pic):
 #generate the images of the set
 
 generateimg(pic)
-
+#normalize it
+pic = pic.astype("float32") / 255.0
+print(f"pic after normalizing {pic.shape}")
 #print(f"shape of the small set of images: {pic}")
 
 print(f"Shape of training images: {all_digits.shape}")
@@ -133,7 +142,29 @@ def gelu(x):
     return 0.5 * x * (1 + B.tanh(x * 0.7978845608 * (1 + 0.044715 * x * x)))
 
 
-#Divide the Images in Patches
+# def generate_and_save_images(generator, epoch, combined, direct, image_size, f_size=2.88):
+#     predictions = generator(combined, training=False)
+#
+#     gen_img = tf.clip_by_value(predictions[0] * 127.5 + 127.5, 0.0, 255.0)
+#     gen_img = tf.cast(gen_img, tf.uint8)
+#
+#     fig = plt.figure(figsize=(f_size, f_size))
+#
+#     for i in range(gen_img.shape[0]):
+#         plt.subplot(8, 8, i + 1)
+#         plt.imshow(gen_img[i, :, :, :])
+#         plt.axis('off')
+#     plt.subplots_adjust(wspace=0, hspace=0, left=0, right=1, bottom=0, top=1)
+#
+#     path = os.path.join(, '{:04d}.png'.format(epoch))
+#     plt.savefig(path)
+#
+#     # Clear the current axes.
+#     plt.cla()
+#     # Clear the current figure.
+#     plt.clf()
+#     # Closes all the figure windows.
+#     plt.close('all')
 
 
 
@@ -164,6 +195,10 @@ class Embedding(layers.Layer):
 
         return tokens+pos
 
+
+
+
+
 #Preparation for better robustness  (https://arxiv.org/pdf/2111.08413.pdf)
 
 class Prep(layers.Layer):
@@ -176,7 +211,7 @@ class Prep(layers.Layer):
     def call(self, x):
         x=self.prenorm(x)
         x=self.preflatten(x)
-
+        #x=x.astype(np.uint8)
 
         return x
 
@@ -185,6 +220,7 @@ class Prep(layers.Layer):
 
 class MultiHeadAttention(layers.Layer):
     def __init__(self, dim_model, num_heads, initializer='glorot_uniform'):
+        super(MultiHeadAttention,self).__init__()
         print(f"MHA Inputs dim num {dim_model, num_heads}")
         self.num_heads=num_heads
         self.dim_model=dim_model
@@ -318,10 +354,10 @@ class Combine(layers.Layer):
 #Encoder
 
 class generator(layers.Layer):
-    def __init__(self, dim_model, embed_dim, num_heads, mlp_dim, dropout,  noise_dim, model_dim=[512,256,128,64,32], modelinitializer ='glorot_uniform'):
+    def __init__(self, dim_model, embed_dim, num_heads, mlp_dim, dropout,  noise_dim, modelinitializer ='glorot_uniform'):
         super(generator, self).__init__()
         print(f"inputs generator {dim_model, embed_dim, num_heads, mlp_dim, dropout}")
-
+        model_dim = [512, 256, 128, 64, 32]
         self.dim_model = dim_model
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -360,8 +396,6 @@ class generator(layers.Layer):
         self.reshape1=layers.Reshape((4,4,256))
 
     def call(self, x):
-        #x= TransformerBlock
-        B=x.shape[0]
         x   =   self.Input(x)
 
         x   =   self.D(x)
@@ -376,11 +410,8 @@ class generator(layers.Layer):
         x   =   self.Transformerblock(x)
 
 
-
+        #Reshape it to image dim
         x   =   self.reshape1(x)
-
-        #
-
         x=self.convBlock1(x)
         # x=layers.Reshape((x),(8,8,128))
         x=self.convBlock2(x)
@@ -389,50 +420,56 @@ class generator(layers.Layer):
 
         x = self.Output(x)
         # x=layers.Reshape((x),(32,32,3))
-
+        x=x.astype(np.uint8)
         return x
 
 
 class discriminator(layers.Layer):
-    def __init__(self, dim_model, disc_dim=[64,128,256,512]):
+    def __init__(self, embed_dim, num_heads, mlp_dim, dropout):
         super(discriminator, self).__init__()
-        print(f"inputs discriminator {dim_model}")
-        self.dim_model= dim_model
-        self.inputlay=layers.InputLayer(input_shape=(32,32,3))
-        self.block=keras.Sequential=([layers.Conv2D(disc_dim[0], (4,4), strides=(2,2), padding ='same'),
-            layers.LeakyReLU(alpha=0.2)
+        disc_dim = [64, 128, 256, 512]
+
+        self.embed_dim=embed_dim
+        self.mlp_dim=mlp_dim
+        self.num_heads= num_heads
+        self.dropout=dropout
+
+
+        self.inputlay=layers.InputLayer(input_shape=(None,32,32,3))
+        self.block1=tf.keras.Sequential([
+            layers.Conv2D(disc_dim[0], (4,4), strides=(2,2), padding ='same', input_shape=(32,32,3)),
+            layers.BatchNormalization(),
+            layers.LeakyReLU(alpha=0.2),
             ])
-        self.block1 = keras.Sequential = ([
+        self.block2 = tf.keras.Sequential([
             layers.Conv2D(disc_dim[1], (4, 4), strides=(2, 2), padding='same'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(alpha=0.2)
+            layers.LeakyReLU(alpha=0.2),
          ])
-        self.block2 = keras.Sequential = ([
+        self.block3 = tf.keras.Sequential([
             layers.Conv2D(disc_dim[2], (4, 4), strides=(2, 2), padding='same'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(alpha=0.2)
+            layers.LeakyReLU(alpha=0.2),
         ])
-        self.block3 = keras.Sequential = ([
+        self.block4 = tf.keras.Sequential  ([
             layers.Conv2D(disc_dim[3], (4, 4), strides=(2, 2), padding='same'),
             layers.BatchNormalization(),
-            layers.LeakyReLU(alpha=0.2)
+            layers.LeakyReLU(alpha=0.2),
         ])
-        self.Outblock =keras.Sequential=([
+        self.Outblock =tf.keras.Sequential([
             layers.Flatten(),
-            layers.Dropout(0.2),
+            layers.Dropout(0.3),
             layers.Dense(1,activation='sigmoid')
         ])
-
+        self.Transformerblock = TransformerBlock(self.embed_dim, self.num_heads, self.mlp_dim, self.dropout)
 
     def call(self, x):
-
         x   =   self.inputlay(x)
-        x   =   self.block(x)
-
+        #x=      self.Transformerblock(x)
         x   =   self.block1(x)
-
         x   =   self.block2(x)
         x   =   self.block3(x)
+        x   =   self.block4(x)
         x   =   self.Outblock(x)
         return x
 
@@ -440,7 +477,10 @@ class discriminator(layers.Layer):
 class Compression(keras.Model):
     def __init__(self):
         super(Compression,self).__init__()
-
+        self.generator = generator(args.dim_model, args.embed_dim, args.num_heads, args.mlp_dim, args.dropout,  args.noise_dim)
+        self.discriminator=discriminator(args.embed_dim, args.num_heads, args.mlp_dim, args.dropout)
+        self.embedding = Embedding(args.image_size, args.patch_size, args.dim_model, args.num_channels)
+        self.prep = Prep()
 
 
         self.gen_loss_tracker = keras.metrics.Mean(name="generator_loss")
@@ -456,7 +496,9 @@ class Compression(keras.Model):
         self.gen_loss_tracker = keras.metrics.Mean(name="generator_loss")
         self.disc_loss_tracker = keras.metrics.Mean(name="discriminator_loss")
 
+
     @property
+
     def metrics(self):
         return [self.gen_loss_tracker, self.disc_loss_tracker]
 
@@ -466,11 +508,11 @@ class Compression(keras.Model):
         self.g_optimizer = g_optimizer
         self.loss_fn = loss_fn
 
-    def extract_patches(self, pic, num_channels, patch_size):
+    def extract_patches(self, data, num_channels, patch_size):
         patch_dim = num_channels * patch_size ** 2
-        batch_size = tf.shape(pic)[0]
+        batch_size = tf.shape(data)[0]
         patches = tf.image.extract_patches(
-                images=pic,
+                images=data,
                 sizes=[1, patch_size, patch_size, 1],
                 strides=[1, patch_size, patch_size, 1],
                 rates=[1, 1, 1, 1],
@@ -481,7 +523,17 @@ class Compression(keras.Model):
         return patches
 
     def train_step(self, data):
-        pic,pic_labels =data
+        real_images, one_hot_labels = data
+
+        # Add dummy dimensions to the labels so that they can be concatenated with
+        # the images. This is for the discriminator.
+        image_one_hot_labels = one_hot_labels[:, :, None, None]
+        image_one_hot_labels = tf.repeat(
+            image_one_hot_labels, repeats=[args.image_size * args.image_size]
+        )
+        image_one_hot_labels = tf.reshape(
+            image_one_hot_labels, (-1, args.image_size, args.image_size, args.num_classes)
+        )
 
 
 
@@ -489,72 +541,84 @@ class Compression(keras.Model):
 
 
 
-        batch_size=pic[0]
-        patches = self.extract_patches(pic, args.num_channels, args.patch_size)
-        embedding = Embedding(args.image_size, args.patch_size, args.dim_model, args.num_channels)
-        prep = Prep()
-
-        Generator =generator(args.dim_model, args.embed_dim, args.num_heads, args.mlp_dim, args.dropout,  args.noise_dim,  model_dim=[512,256,128,64,32])
-
+        #Generator =generator(args.dim_model, args.embed_dim, args.num_heads, args.mlp_dim, args.dropout,  args.noise_dim)
+        #Discriminator = discriminator(args.embed_dim, args.num_heads, args.mlp_dim, args.dropout)
 
         #Encode the images
-        with tf.GradientTape() as tape:
 
-            # print(f"x  as patches {x}")
-            x = embedding(patches)
+        # print(f"x  as patches {x}")
+        patches=self.extract_patches(self, real_images, args.num_channels, args.patch_size)
+        x = self.embedding(patches)
+        print(f"x as Token and Positions {x}")
+        x=self.prep(x)
+        print(f"x after prep {x}")
+        print(f"size after prep {sys.getsizeof(x)}")
+        gen_images=self.generator(x)
 
-            print(f"x as Token and Positions {x}")
-            x=prep(x)
+        print(f"gen_images {gen_images}")
 
-            print(f"x after prep {x}")
+        batch_size=tf.shape(real_images)[0]
 
-            print(f"size after prep {sys.getsizeof(x)}")
+        print(f"image_one_hot {image_one_hot_labels}")
+            # Combine them with real images. Note that we are concatenating the labels
+            # with these images here.
+        fake_image_and_labels = tf.concat([gen_images, image_one_hot_labels], -1)
+        real_image_and_labels = tf.concat([real_images, image_one_hot_labels], -1)
+        combined_images = tf.concat(
+                [fake_image_and_labels, real_image_and_labels], axis=0
+            )
 
-
-            gen_images=Generator(x)
-           #testimages=gen_images.astype(np.uint8)
-
-            print(f"gen_images {gen_images}")
-            # plt.imshow(np.uint8(gen_images[0, :, :, :]*255))
-            # plt.show()
-
-            img_as_ubyte(gen_images)
-
-            print(f"gen_images {gen_images}")
-
-            print(f"pic before combined {pic}")
-
-
-
-        combined=tf.concat([gen_images,pic], axis=-1)
-
+        # Assemble labels discriminating real from fake images.
         labels = tf.concat(
             [tf.ones((batch_size, 1)), tf.zeros((batch_size, 1))], axis=0
         )
+
+
+
+
+        print(f"combined after concat {combined_images}")
+        #plt.imshow(combined_images[0, :, :, :] * 255)
+        print(f"gen_images {gen_images}")
+
+        batch_size=tf.shape(real_images)[0]
+        labels = tf.concat([tf.ones((batch_size, 1)), tf.zeros((batch_size, 1))], axis=0)
+
+
         # Train the discriminator.
         with tf.GradientTape() as tape:
-            predictions = discriminator(combined)
+            predictions = self.discriminator(combined_images)
             d_loss = self.loss_fn(labels, predictions)
-        grads = tape.gradient(d_loss, discriminator.trainable_weights)
-
-
+        grads = tape.gradient(d_loss, self.discriminator.trainable_weights)
         self.d_optimizer.apply_gradients(
-            zip(grads, discriminator.trainable_weights)
-        )
+            zip(grads, self.discriminator.trainable_weights)
+             )
+
+        misleading_labels = tf.zeros((batch_size, 1))
 
 
         # Train the generator for the images
         with tf.GradientTape() as tape:
-            rebuild_images = generator(x)
+            rebuild_images =self.generator(combined_images)
+            rebuild_images_and_labels=tf.concat([rebuild_images, image_one_hot_labels],-1)
+            predictions=self.discriminator(rebuild_images_and_labels)
+
+            g_loss = self.loss_fn(misleading_labels, predictions)
+
+            # # Produce images for the GIF as you go
+            # display.clear_output(wait=True)
+            # generate_and_save_images(generator,epoch + 1,seed)
+            #
+            # # Save the model every 15 epochs
+            # if (epoch + 1) % 15 == 0:
+            #     checkpoint.save(file_prefix=checkpoint_prefix)
 
 
-
-        grads = tape.gradient(self.g_loss, generator.trainable_weights)
-        self.g_optimizer.apply_gradients(zip(grads, generator.trainable_weights))
+        grads = tape.gradient(self.g_loss, self.generator.trainable_weights)
+        self.g_optimizer.apply_gradients(zip(grads, self.generator.trainable_weights))
 
         # Monitor loss.
-        self.gen_loss_tracker.update_state(self.g_loss)
-        self.disc_loss_tracker.update_state(self.d_loss)
+        self.gen_loss_tracker.update_state(g_loss)
+        self.disc_loss_tracker.update_state(d_loss)
 
         return {
 
@@ -562,16 +626,51 @@ class Compression(keras.Model):
              "d_loss": self.disc_loss_tracker.result(),
          }
 
+    # #
+    def call(self, data, training=False):
+        # You don't need this method for training.
+        # So just pass.
+        x=self.extract_patches(data, args.num_channels, args.patch_size)
+        x=self.embedding(x)
+        x=self.prep(x)
+        x=self.generator(x)
+        predictions=self.discriminator(x)
 
-compress = Compression()
-compress.compile(
+        x=self.generator(x)
+        predictions=self.discriminator(x)
+        return x
+
+
+
+
+
+
+
+
+model = Compression()
+input_shape=(None,32,32,3)
+model(sdataset)
+model.build(input_shape)
+model.summary()
+model.compile(
     d_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     g_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True)
                  )
 
-compress.fit(sdataset, epochs=5)
-compress.summary()
+
+#compress.build(input_shape=(10000,32,32,3))
+#output = compress((32,32,3))
+
+
+
+
+
+model.fit(sdataset, epochs=5)
+
+#trained_gen =  compress.generator
+
+
 
 
 
