@@ -19,7 +19,7 @@ parser.add_argument("--dataset", default="train", choices=["train", "test"])
 parser.add_argument("--image_size", default="32", type=int)
 parser.add_argument("--num_channels", default="3", type=int)
 parser.add_argument("--num_classes", default="10", type=int)
-parser.add_argument("--num_layers", default="3", type=int)
+parser.add_argument("--num_layers", default="5", type=int)
 parser.add_argument("--train", default="training", choices=["train", "test"])
 parser.add_argument("--dropout", default="0.1", type=float)
 parser.add_argument("--dim_model", default="64", type=int)
@@ -64,7 +64,16 @@ if args.dataset=='test':
     test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
 
 
+def generateimg(pic):
+    fig=plt.figure(figsize=(4,4))
 
+    for i in range(5):
+        plt.subplot(4,4,i+1)
+        plt.imshow(pic[i])
+        plt.axis('off')
+    plt.show()
+
+generateimg(x_val[0:5])
 
 
 # Input architecture
@@ -77,18 +86,22 @@ print(f"hidden units and num patches {hidden_units,num_patches}")
 #Create Patches Method
 
 
-def position_embedding(projected_patches, num_patches, projection_dim):
-    # Build the positions.
-    positions = tf.range(start=0, limit=num_patches, delta=1)
 
-    # Encode the positions with an Embedding layer.
-    encoded_positions = layers.Embedding(
-        input_dim=num_patches, output_dim=projection_dim
-    )(positions)
 
-    # Add encoded positions to the projected patches.
-    return projected_patches + encoded_positions
+class position_embedding(layers.Layer):
+    def __init__(self,  num_patches, projection_dim):
+        super(position_embedding,self).__init__()
+        print(f"Embedding inputs { num_patches, projection_dim}")
 
+        self.encoded_positions = layers.Embedding(input_dim=num_patches, output_dim=projection_dim)
+
+    def call(self, x):
+        positions = tf.range(start=0, limit=num_patches, delta=1)
+        encoded_positions=self.encoded_positions(positions)
+
+
+
+        return x + encoded_positions
 
 #Data Augmentation
 
@@ -111,7 +124,22 @@ def mlp(x, dropout, hidden_units):
     return x
 
 #get an attention map for further
+class project_patches(layers.Layer):
+    def __init__(self, mlp_dim, patch_size):
+        super(project_patches, self).__init__()
 
+        self.projected_patches  = layers.Conv2D(
+        filters=mlp_dim,
+        kernel_size=(patch_size, patch_size),
+        strides=(patch_size, patch_size),
+        padding="VALID",)
+
+
+    def call(self, x):
+        x= self.projected_patches(x)
+        _, h, w, c = x.shape
+        x = layers.Reshape((h * w, c))(x)
+        return x
 
 class attention_map(layers.Layer):
     def __init__(self, num_tokens, layer_norm):
@@ -156,7 +184,48 @@ class attention_map(layers.Layer):
         outputs = tf.reduce_mean(attended_inputs, axis=2)  # (B, num_tokens, C)
         return outputs
 
+class attention_map_comp(layers.Layer):
+    def __init__(self, num_tokens, layer_norm):
+        super(attention_map_comp, self).__init__()
+        print(f"inputs of attention map {num_tokens, layer_norm}")
+        self.Inputlayer=layers.LayerNormalization(epsilon=layer_norm)
+        self.amap=keras.Sequential([
+            layers.Conv2D(
+                filters=num_tokens,
+                kernel_size=(3, 3),
+                activation=tf.nn.gelu,
+                padding="same",
+                use_bias=False,
+            ),
+            layers.Conv2D(
+                filters=num_tokens,
+                kernel_size=(3, 3),
+                activation=tf.nn.gelu,
+                padding="same",
+                use_bias=False,
+            ),
+            layers.Conv2D(
+                filters=num_tokens,
+                kernel_size=(3, 3),
+                activation="sigmoid",
+                padding="same",
+                use_bias=False,
+            ),
+            #layers.Reshape((-1, num_tokens)),
+            #layers.Permute((2,1)),
+        ])
 
+
+    def call(self, inputs):
+        x=self.Inputlayer(inputs)
+        x=self.amap(x)
+        # num_filters = inputs.shape[-1]
+        # inputs = layers.Reshape((1, -1, num_filters))(inputs)
+        # attended_inputs = (
+        #         x[..., tf.newaxis] * inputs
+        # )
+        # outputs = tf.reduce_mean(attended_inputs, axis=2)  # (B, num_tokens, C)
+        return x
 
 
 class transformer(layers.Layer):
@@ -182,40 +251,22 @@ class transformer(layers.Layer):
         encoded_patches=self.add([x2,x4])
         return encoded_patches
 
-def project_patches(inputs, mlp_dim, patch_size):
-    projected_patches=layers.Conv2D(
-        filters=mlp_dim,
-        kernel_size=(patch_size, patch_size),
-        strides=(patch_size, patch_size),
-        padding="VALID",
-    )(inputs)
-    _, h, w, c = projected_patches.shape
-    projected_patches = layers.Reshape((h * w, c))(projected_patches)
-    return projected_patches
 
 
 
-def prep(inputs, mlp_dim, patch_size, num_patches, projection_dim, dropout):
-    x= data_augmentation(inputs)
-    print(f"x after data augmentation {x}")
-    x= project_patches(x, mlp_dim, patch_size)
-    print(f"x after project patches {x}")
-    x=position_embedding(x,  num_patches, projection_dim)
-    print(f"x after position embedding  {x}")
-    x=layers.Dropout(dropout)(x)
-    print(f"x after dropout {x}")
-    return x
+
+
 
 
     # 2. Step Create the generator.
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(32,32,3)),
+        keras.layers.InputLayer(input_shape=(4,4,128)),
         #layers.BatchNormalization(),
 
-        layers.Dense(4*4*512, use_bias=False),
-        #layers.Reshape((4,4,512)),
+        layers.Dense(128, use_bias=False),
+        layers.Reshape((4,4,128)),
 
         # Rebuild with Conv
         layers.Conv2DTranspose(512, (4, 4), strides=(1,1), padding="same", activation='relu'),
@@ -258,7 +309,7 @@ discriminator = keras.Sequential(
 
 
 class ConditionalGAN(keras.Model):
-    def __init__(self, data_augmentation, discriminator, generator, transformer, attention_map):
+    def __init__(self, data_augmentation, discriminator, generator, transformer, attention_map,  project_patches, position_embedding):
         super(ConditionalGAN, self).__init__()
         self.data_augmentation=data_augmentation
         self.discriminator = discriminator
@@ -268,8 +319,9 @@ class ConditionalGAN(keras.Model):
         self.transformer=transformer(args.num_heads, args.mlp_dim, args.dropout)
 
         self.attention_map=attention_map(args.num_tokens, args.layer_norm)
-
-
+        #self.attention_map_com=attention_map_comp(args.num_tokens, args.layer_norm)
+        self.project_patches = project_patches(args.mlp_dim, args.patch_size)
+        self.position_embedding =position_embedding(num_patches, args.projection_dim)
         self.latent_dim = args.latent_dim
         self.gen_loss_tracker = keras.metrics.Mean(name="generator_loss")
         self.disc_loss_tracker = keras.metrics.Mean(name="discriminator_loss")
@@ -300,31 +352,28 @@ class ConditionalGAN(keras.Model):
 
         # Add dummy dimensions to the labels so that they can be concatenated with
         # the images. This is for the discriminator.
-        image_one_hot_labels = one_hot_labels[:, :, None, None]
-        image_one_hot_labels = tf.repeat(
-            image_one_hot_labels, repeats=[args.image_size * args.image_size]
-        )
-        image_one_hot_labels = tf.reshape(
-            image_one_hot_labels, (-1, args.image_size, args.image_size, args.num_classes)
-        )
-
-
-
-
+        # image_one_hot_labels = one_hot_labels[:, :, None, None]
+        # image_one_hot_labels = tf.repeat(
+        #     image_one_hot_labels, repeats=[args.image_size * args.image_size]
+        # )
+        # image_one_hot_labels = tf.reshape(
+        #     image_one_hot_labels, (-1, args.image_size, args.image_size, args.num_classes)
+        # )
         # Sample random points in the latent space and concatenate the labels.
         # This is for the generator.
         batch_size = tf.shape(real_images)[0]
 
         # Encode the images
 
-        # x=self.data_augmentation(real_images)
-        # print(f"x after data augmentation{x}")
-        # x=project_patches(x,args.mlp_dim, args.patch_size)
-        # print(f"x after projection {x}")
-        # x=position_embedding(x, num_patches, args.projection_dim)
+        x = data_augmentation(real_images)
+        print(f"x after data augmentation {x}")
+        x=self.project_patches(x)
+        print(f"x after project patches {x}")
+        x = self.position_embedding(x)
+        print(f"x after position embedding  {x}")
+        x = layers.Dropout(args.dropout)(x)
+        print(f"x after dropout {x}")
 
-
-        x=prep(real_images,args.mlp_dim, args.patch_size, num_patches, args.projection_dim, args.dropout)
         print(f"x after prep{x}")
         for i in range(args.num_layers):
             x=self.transformer(x)
@@ -338,37 +387,48 @@ class ConditionalGAN(keras.Model):
                 x=self.attention_map(x)
                 print(f"attention map x {x}")
 
+        print(f"x after transformer {x}")
         print(f"size after attention map {sys.getsizeof(x)}")
-        # x=layers.LayerNormalization(epsilon=args.layer_norm)(x)
-        # x=layers.GlobalAveragePooling1D()(x)
+            # x=layers.LayerNormalization(epsilon=args.layer_norm)(x)
+            # x=layers.GlobalAveragePooling1D()(x)
 
         #Get the size of the attention map
         print(f"size after attention map {sys.getsizeof(x)}")
-
+        x= tf.expand_dims(x, axis=1)
+        print(f"x after x expansion {x}")
         #create Noise
-        random_latent_vectors =tf.random.normal(shape=(batch_size, 4, self.latent_dim))
+        #one noise only
+        random_latent_vectors2=tf.random.normal(shape=(batch_size,4,4,args.latent_dim))
 
+        #one for concat with the attentionmaps
+        random_latent_vectors1 =tf.random.normal(shape=(batch_size,3,4,args.latent_dim))
+        print(f"random latent vectors as pure noise {random_latent_vectors1}")
 
         #combine them with the encoded images
-        random_latent_vectors=tf.concat([x,random_latent_vectors], axis=1)
-
-
+        random_latent_vectors=tf.concat([x,random_latent_vectors1], axis=1)
+        print(f"random latent vectors  after combined {random_latent_vectors}")
         # random_vector_labels = tf.concat(
         #     [random_latent_vectors, one_hot_labels], axis=1
         # )
-        print(f"random latent vectors {random_latent_vectors.shape}")
+        print(f"random latent vectors {random_latent_vectors}")
+
+        #random_latent_vectors=layers.Reshape((4,4,128))(random_latent_vectors)
+
+        print(f"random latent vectors {random_latent_vectors}")
+        generated_images = self.generator(random_latent_vectors2, training=False)
+        print(f"gemerated images of combined  {generated_images}")
 
 
 
-
-        generated_images = self.generator(random_latent_vectors)
-
+        #image_one_hot_labels=image_one_hot_labels.astype('float32')#
         # Combine them with real images. Note that we are concatenating the labels
         # with these images here.
-        fake_image_and_labels = tf.concat([generated_images, image_one_hot_labels], -1)
-        real_image_and_labels = tf.concat([real_images, image_one_hot_labels], -1)
+        #fake_image_and_labels = tf.concat([generated_images, image_one_hot_labels], -1)
+        #print(f"fake image and labels {fake_image_and_labels}")
+        real_images=real_images.astype("float32") / 255.0
+        #real_image_and_labels = tf.concat([real_images, image_one_hot_labels], -1)
         combined_images = tf.concat(
-            [fake_image_and_labels, real_image_and_labels], axis=0
+            [generated_images, real_images], axis=0
         )
 
         # Assemble labels discriminating real from fake images.
@@ -379,6 +439,7 @@ class ConditionalGAN(keras.Model):
 
         with tf.GradientTape() as tape:
             predictions = self.discriminator(combined_images)
+            print(f" shape predictions {predictions.shape}")
             d_loss = self.loss_fn(labels, predictions)
         grads = tape.gradient(d_loss, self.discriminator.trainable_weights)
         self.d_optimizer.apply_gradients(
@@ -386,10 +447,10 @@ class ConditionalGAN(keras.Model):
         )
 
         # Sample random points in the latent space.
-        random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
-        random_vector_labels = tf.concat(
-            [random_latent_vectors, one_hot_labels], axis=1
-        )
+        #random_latent_vectors = tf.random.normal(shape=(batch_size, self.latent_dim))
+        # random_vector_labels = tf.concat(
+        #     [random_latent_vectors, one_hot_labels], axis=1
+        # )
 
         # Assemble labels that say "all real images".
         misleading_labels = tf.zeros((batch_size, 1))
@@ -403,50 +464,33 @@ class ConditionalGAN(keras.Model):
 
 
         with tf.GradientTape() as tape:
-            # 1.Step Data Preparation
-
-
-
-            #Actual Model
-
-
-
-            # print(f"x after preparation{x}")
-            #
-            # # 2.Step Concanate image information with random vector
-            # #x=keras.Sequential([keras.layers.Flatten(x)])
-            # print(f"x after flaten{x}")
-            #
-            # #x=tf.concat([random_latent_vectors,x], axis =-1)
-            #
-            # print(f"x after concat{x}")
-            #
-            #
-            #
-            # print(f"Modell after combination information with random latent vector {x}")
-
-
-            fake_images = self.generator(x)
-
-            fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
-
-            predictions = self.discriminator(fake_image_and_labels)
-
+            # rebuild images
+            fake_images = self.generator(random_latent_vectors)
+            print(f"rebuild images {fake_images.shape}")
+            #fake_image_and_labels = tf.concat([fake_images, image_one_hot_labels], -1)
+            predictions = self.discriminator(fake_images)
+            print(f"predictions2 {predictions}")
             g_loss = self.loss_fn(misleading_labels, predictions)
 
         grads = tape.gradient(g_loss, self.generator.trainable_weights)
+        print(f"grads as tape ")
         self.g_optimizer.apply_gradients(zip(grads, self.generator.trainable_weights))
+
+
 
         # Monitor loss.
         self.gen_loss_tracker.update_state(g_loss)
         self.disc_loss_tracker.update_state(d_loss)
+
         return {
             "g_loss": self.gen_loss_tracker.result(),
             "d_loss": self.disc_loss_tracker.result(),
+
+
         }
 
 cond_gan = ConditionalGAN(
-    discriminator=discriminator, generator=generator, data_augmentation=data_augmentation, transformer=transformer, attention_map=attention_map
+    discriminator=discriminator, generator=generator, data_augmentation=data_augmentation, transformer=transformer, attention_map=attention_map, project_patches=project_patches, position_embedding=position_embedding
 )
 cond_gan.compile(
     d_optimizer=keras.optimizers.Adam(learning_rate=0.0003),
@@ -454,10 +498,74 @@ cond_gan.compile(
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True),
 )
 
-cond_gan.fit(train_ds, epochs=20)
-# generator.summary()
-# discriminator.summary()
-cond_gan.summary()
+cond_gan.fit(train_ds, epochs=10)
+
+# cond_gan.build(input_shape=(32,32,3))
+cond_gan.generator.summary()
+cond_gan.discriminator.summary()
+
 
 # We first extract the trained generator from our Conditional GAN.
+#and the input for the generator
 trained_gen = cond_gan.generator
+
+
+def show(data):
+    real_images=x_val[0:5]
+    print(f"size after attention map {sys.getsizeof(real_images[0])}")
+    batch_size = tf.shape(real_images)[0]
+    x = data_augmentation(real_images)
+    print(f"x after data augmentation {x.shape}")
+    x = project_patches(args.mlp_dim, args.patch_size)(x)
+    print(f"x after project patches {x.shape}")
+    x = position_embedding(num_patches, args.projection_dim)(x)
+    print(f"x after position embedding  {x.shape}")
+    x = layers.Dropout(args.dropout)(x)
+    #print(f"x after dropout {x}")
+
+    #print(f"x after prep{x}")
+    for i in range(args.num_layers):
+        x = transformer(args.num_heads, args.mlp_dim, args.dropout)(x)
+        #print(f"x after transformer {x}")
+        if i == 2:
+            _, hh, c = x.shape
+            h = int(math.sqrt(hh))
+            x = layers.Reshape((h, h, c))(
+                x
+            )
+            x = attention_map(args.num_tokens, args.layer_norm)(x)
+            #print(f"attention map x {x}")
+
+    print(f"x after transformer {x}")
+    #print(f"size after attention map {sys.getsizeof(x)}")
+    # x=layers.LayerNormalization(epsilon=args.layer_norm)(x)
+    # x=layers.GlobalAveragePooling1D()(x)
+
+    # Get the size of the attention map
+    print(f"size after attention map {sys.getsizeof(x)}")
+    x = tf.expand_dims(x, axis=1)
+
+    # one for concat with the attentionmaps
+    random_latent_vectors1 = tf.random.normal(shape=(batch_size, 3, 4, args.latent_dim))
+    #print(f"random latent vectors as pure noise {random_latent_vectors1}")
+
+    # combine them with the encoded images
+    random_latent_vectors = tf.concat([x, random_latent_vectors1], axis=1)
+
+    fake = generator.predict(random_latent_vectors)
+
+    def generateimg(pic):
+        fig = plt.figure(figsize=(4, 4))
+
+        for i in range(5):
+            plt.subplot(4, 4, i + 1)
+            plt.imshow(pic[i])
+            plt.axis('off')
+        plt.show()
+
+    generateimg(fake)
+
+    return fake
+
+
+show(x_val)
