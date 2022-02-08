@@ -85,6 +85,7 @@ def generateimg(pic):
 #generate the images of the set
 
 generateimg(pic)
+
 #normalize it
 pic = pic.astype("float32") / 255.0
 print(f"pic after normalizing {pic.shape}")

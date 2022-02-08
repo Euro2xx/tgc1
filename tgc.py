@@ -498,7 +498,7 @@ cond_gan.compile(
     loss_fn=keras.losses.BinaryCrossentropy(from_logits=True),
 )
 
-cond_gan.fit(train_ds, epochs=10)
+cond_gan.fit(train_ds, epochs=20)
 
 # cond_gan.build(input_shape=(32,32,3))
 cond_gan.generator.summary()
