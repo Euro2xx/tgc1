@@ -6,6 +6,7 @@ from tensorflow.keras import layers
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
+import tensorflow_addons as tfa
 # import os
 # from skimage.util import img_as_ubyte
 # from PIL import Image
@@ -37,6 +38,7 @@ parser.add_argument("--discriminator_in_channels", default="18", type=int)
 parser.add_argument("--layer_norm", default="1e-6", type=float)
 parser.add_argument("--projection_dim", default="128", type=int)
 parser.add_argument("--num_tokens", default="4", type=int)
+parser.add_argument("--filters", default="64", type=int)
 args = parser.parse_args()
 
 # Dataset
@@ -52,6 +54,7 @@ print(f"Validation samples: {len(x_val)}")
 print(f"Testing samples: {len(x_test)}")
 print(f"Size of the image in bytes {sys.getsizeof(x_val)}")
 # Convert to tf.data.Dataset objects.
+
 if args.dataset == 'train':
     x_train = x_train.astype("float32") / 255.0
     y_train = keras.utils.to_categorical(y_train, 10)
@@ -81,7 +84,7 @@ def generateimg(pic):
 
 #size of the image
 
-generateimg(x_val)
+#generateimg(x_val)
 
 
 def show(epoch, trained_gen):
@@ -310,6 +313,9 @@ class noise(layers.Layer):
 
     def call(self, x):
         batch_size = tf.shape(x)[0]
+        print(f"get size of tensor {x.size}")
+        print(f"get the size in bytes {sys.getsizeof(x)}")
+        print(f"get the size {sys.getsizeof(x[1])}")
         random_latent_vector1 = tf.random.normal(shape=(batch_size, 4, self.latent_dim))
         # random_latent_vector1 = random_latent_vector1.astype("uint8")
         x = tf.concat([x, random_latent_vector1], axis=1)
@@ -318,23 +324,86 @@ class noise(layers.Layer):
         return x
 
 
-class residual(layers.Layer):
-    def __init__(self, kernel_size, filters, strides):
-        super(noise, self).__init__()
-        self.init = tf.contrib.layers.xavier_initializer()
-        self.p = int((kernel_size - 1) / 2)
-        self.conv = tf.layers.conv2d(filters=filters, kernel_size=kernel_size, strides=strides, activation=None,
-                                     padding='VALID')
+class ReflectionPadding2D(layers.Layer):
+    """Implements Reflection Padding as a layer.
+
+    Args:
+        padding(tuple): Amount of padding for the
+        spatial dimensions.
+
+    Returns:
+        A padded tensor with the same type as the input tensor.
+    """
+
+    def __init__(self, padding=(1, 1), **kwargs):
+
+        super(ReflectionPadding2D, self).__init__(**kwargs)
+
+        self.padding = padding
+
+    def call(self, x, mask=None):
+
+        padding_width, padding_height = self.padding
+
+        padding_tensor = [
+            [0, 0],
+            [padding_height, padding_height],
+            [padding_width, padding_width],
+            [0, 0],
+        ]
+        return tf.pad(x, padding_tensor, mode="REFLECT")
+
+
+class residual_block(layers.Layer):
+    def __init__(self, activation, kernel_initializer=keras.initializers.RandomNormal(mean=0.0, stddev=0.02), kernel_size=(3, 3),
+                 strides=(1, 1), gamma_initializer= keras.initializers.RandomNormal(mean=0.0, stddev=0.02), use_bias=False, padding ="valid"):
+        super(residual_block, self).__init__()
+
+        self.activation=activation
+        self.conv=layers.Conv2D(512, kernel_size=kernel_size,strides=strides,kernel_initializer=kernel_initializer,padding=padding,use_bias=use_bias,)
+        self.conv1 = layers.Conv2D(512, activation='relu', kernel_size=kernel_size, strides=strides,
+                                  kernel_initializer=kernel_initializer, padding=padding, use_bias=use_bias, )
+        self.add=layers.Add()
+        self.Instance=tfa.layers.InstanceNormalization(gamma_initializer=gamma_initializer)
 
     def call(self, x):
-        p = self.p
-        x = tf.pad(x, [[0, 0], [p, p], [p, p], [0, 0]], 'REFLECT')
-        x = self.conv(x)
-        x = layers.Activation(tf.contrib.layers.instance_norm(x))
-        x = tf.pad(x, [[0, 0], [p, p], [p, p], [0, 0]], 'REFLECT')
-        x = self.conv(x)
-        x
+        dim = x.shape[-1]
 
+        input_tensor=x
+        x=  ReflectionPadding2D()(x)
+        x=  self.conv(x)
+        x=  self.Instance(x)
+
+        x=  self.activation(x)
+        x=  ReflectionPadding2D()(x)
+        x=  self.conv(x)
+        x=  self.Instance(x)
+        x=  self.add([input_tensor,x])
+
+
+        return x
+
+
+
+
+class upsample(layers.Layer):
+    def __init__(self, filters, activation, kernel_size=(3, 3), strides=(2, 2), padding="same", kernel_initializer=keras.initializers.RandomNormal(mean=0.0, stddev=0.02),
+            gamma_initializer=keras.initializers.RandomNormal(mean=0.0, stddev=0.02), use_bias=False):
+        super(upsample, self).__init__()
+
+
+        self.Trans = layers.Conv2DTranspose(filters,kernel_size, strides=strides,padding=padding,
+            kernel_initializer=kernel_initializer,
+            use_bias=use_bias)
+        self.Inst = tfa.layers.InstanceNormalization(gamma_initializer=gamma_initializer)
+        self.activation=activation
+    def call(self, x):
+        x=self.Trans(x)
+        x=self.Inst(x)
+
+
+
+        x = self.activation(x)
         return x
 
     # 2. Step Create the generator.
@@ -375,26 +444,42 @@ generator = keras.Sequential(
 
         noise(args.latent_dim),
 
+
+
+
+
         # rebuilding the image
         layers.Dense(1024, use_bias=False),
         layers.Reshape((4, 4, 512)),
+        #ReflectionPadding2D(padding=(3,3)),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        # residual_block(activation=layers.Activation("relu")),
+        # residual_block(activation=layers.Activation("relu")),
+        # residual_block(activation=layers.Activation("relu")),
+        # residual_block(activation=layers.Activation("relu")),
+        # residual_block(activation=layers.Activation("relu")),
 
-        # Rebuild with Conv
-        layers.Conv2DTranspose(512, (4, 4), strides=(1, 1), padding="same", activation='relu'),
 
-        layers.Conv2DTranspose(256, (4, 4), strides=(2, 2), padding="same", activation='relu'),
-        # layers.BatchNormalization(),
-        # layers.Reshape(None, 256, 8, 8),
 
-        layers.Conv2DTranspose(128, (4, 4), strides=(2, 2), padding="same", activation="relu"),
-        # layers.BatchNormalization(),
-        layers.Conv2DTranspose(64, (4, 4), strides=(2, 2), padding="same", activation="relu"),
-        # layers.BatchNormalization(),
-        layers.Conv2DTranspose(32, (4, 4), strides=(2, 2), padding="same", activation="relu"),
-        # layers.BatchNormalization(),
-        layers.Conv2D(32, (4, 4), strides=(2, 2), padding="same", activation="relu"),
+
+
+
+        #Upsample
+
+
+
+        upsample(128, activation=layers.Activation("relu")),
+
+        upsample(64, activation=layers.Activation("relu")),
+
+        upsample(32, activation=layers.Activation("relu")),
+        #
+
         # Outputlayer
-        layers.Conv2D(3, (8, 8), padding="same", activation="sigmoid"),
+        layers.Conv2D(3, (7, 7), padding="same", activation="sigmoid"),
 
     ],
     name="generator",
@@ -599,6 +684,7 @@ class GANMonitor(keras.callbacks.Callback):
 
 
 adv_loss_fn = keras.losses.MeanSquaredError()
+# adv_loss_fn=tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits())
 
 def generator_loss_fn(fake):
     fake_loss = adv_loss_fn(tf.ones_like(fake), fake)
@@ -630,7 +716,7 @@ model_checkpoint_callback = keras.callbacks.ModelCheckpoint(
 # cy_gan.build(input_shape=(32,32,3))
 cy_gan.fit(
     val_ds,
-    epochs=60,
+    epochs=1,
 
     #callbacks=[plotter, model_checkpoint_callback]
 )
