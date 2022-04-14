@@ -2,16 +2,18 @@ import sys
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
-# from tensorflow.keras.models import Sequential
 import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 import tensorflow_addons as tfa
-# import os
-# from skimage.util import img_as_ubyte
-# from PIL import Image
 from tensorflow.python.ops.numpy_ops import np_config
 import math
+import os
+import pickle as pkl
+import tarfile
+import time
+from PIL import Image
+
 
 np_config.enable_numpy_behavior()
 
@@ -41,54 +43,130 @@ parser.add_argument("--num_tokens", default="4", type=int)
 parser.add_argument("--filters", default="64", type=int)
 args = parser.parse_args()
 
-# Dataset
-
-# Load the CIFAR-10 dataset.
-(x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
-(x_train, y_train), (x_val, y_val) = (
-    (x_train[:40000], y_train[:40000]),
-    (x_train[40000:], y_train[40000:]),
-)
-print(f"Training samples: {len(x_train)}")
-print(f"Validation samples: {len(x_val)}")
-print(f"Testing samples: {len(x_test)}")
-print(f"Size of the image in bytes {sys.getsizeof(x_val)}")
-# Convert to tf.data.Dataset objects.
-
-if args.dataset == 'train':
-    x_train = x_train.astype("float32") / 255.0
-    y_train = keras.utils.to_categorical(y_train, 10)
-    train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train))
-    train_ds = train_ds.shuffle(args.batch_size * 100).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
-if args.dataset == 'val':
-    x_val = x_val.astype("float32") / 255.0
-    y_val = keras.utils.to_categorical(y_val, 10)
-    val_ds = tf.data.Dataset.from_tensor_slices((x_val, y_val))
-    val_ds = val_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
-if args.dataset == 'test':
-    x_test = x_test.astype("float32") / 255.0
-    y_test = keras.utils.to_categorical(y_test, 10)
-    test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test))
-    test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+# Dataset from tar file
+# def size1(img):
+#
+#     pixel_val = img
+#     Im_val=list(pixel_val.getdata())
+#     Im_val_flat=[x for sets in Im_val for x in sets]
+    #print(f"Image values {Im_val, Im_val_flat}")
 
 
-def generateimg(pic):
+def load_cifar(root, levels=256, with_y=False):
+    dataset = 'cifar-10-python.tar.gz'
+    data_dir, data_file = os.path.split(dataset)
+    if data_dir == "" and not os.path.isfile(dataset):
+        # Check if dataset is in the data directory.
+        new_path = os.path.join(root, dataset)
+        if os.path.isfile(new_path) or data_file == 'cifar-10-python.tar.gz':
+            dataset = new_path
+
+    f = tarfile.open(dataset, 'r:gz')
+    b1 = pkl.load(f.extractfile("cifar-10-batches-py/data_batch_1"), encoding="bytes")
+    b2 = pkl.load(f.extractfile("cifar-10-batches-py/data_batch_2"), encoding="bytes")
+    b3 = pkl.load(f.extractfile("cifar-10-batches-py/data_batch_3"), encoding="bytes")
+    b4 = pkl.load(f.extractfile("cifar-10-batches-py/data_batch_4"), encoding="bytes")
+    b5 = pkl.load(f.extractfile("cifar-10-batches-py/data_batch_5"), encoding="bytes")
+    test = pkl.load(f.extractfile("cifar-10-batches-py/test_batch"), encoding="bytes")
+    train_x = np.concatenate([b1[b'data'], b2[b'data'], b3[b'data'], b4[b'data'], b5[b'data']], axis=0) / 255.
+    train_x = np.asarray(train_x, dtype='float32')
+    train_t = np.concatenate([np.array(b1[b'labels']),
+                              np.array(b2[b'labels']),
+                              np.array(b3[b'labels']),
+                              np.array(b4[b'labels']),
+                              np.array(b5[b'labels'])], axis=0)
+
+    test_x = test[b'data'] / 255.
+    test_x = np.asarray(test_x, dtype='float32')
+    test_t = np.array(test[b'labels'])
+    f.close()
+
+    train_x = train_x.reshape((train_x.shape[0], 3, 32, 32))
+    train_x=train_x.transpose((0,2,3,1))
+    test_x = test_x.reshape((test_x.shape[0], 3, 32, 32))
+    test_x=test_x.transpose((0,2,3,1))
+
+
+    # train_x = (train_x, levels) / (levels - 1.)
+    # test_x = (test_x, levels) / (levels - 1.)
+
+
+
+
+    # if with_y:
+    #     return (train_x, train_t), (test_x, test_t)
+    return train_x, test_x
+
+
+train_x, test_x=load_cifar('Datasets/')
+
+print(f"Training samples: {len(train_x)}")
+print(f"Test samples.   {len(test_x)}")
+print(f"Training samples: {train_x.shape}")
+print(f"Test samples.   {test_x.shape}")
+
+
+# # Load the CIFAR-10 dataset the keras Dataset.
+# (x_train, y_train), (x_test, y_test) = keras.datasets.cifar10.load_data()
+# (x_train, y_train), (x_val, y_val) = (
+#     (x_train[:40000], y_train[:40000]),
+#     (x_train[40000:], y_train[40000:]),
+# )
+# print(f"Training samples: {len(x_train)}")
+# print(f"Validation samples: {len(x_val)}")
+# print(f"Testing samples: {len(x_test)}")
+
+# # Convert to tf.data.Dataset objects.
+#
+# if args.dataset == 'train':
+#     x_train = x_train.astype("float32") / 255.0
+#     y_train = keras.utils.to_categorical(y_train, 10)
+#     train_ds = tf.data.Dataset.from_tensor_slices((x_train, y_train))
+#     train_ds = train_ds.shuffle(args.batch_size * 100).batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+# if args.dataset == 'val':
+#     x_val = x_val.astype("float32") / 255.0
+#     y_val = keras.utils.to_categorical(y_val, 10)
+#     val_ds = tf.data.Dataset.from_tensor_slices((x_val, y_val))
+#     val_ds = val_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+# if args.dataset == 'test':
+#     x_test = x_test.astype("float32") / 255.0
+#     y_test = keras.utils.to_categorical(y_test, 10)
+#     test_ds = tf.data.Dataset.from_tensor_slices((x_test, y_test))
+#     test_ds = test_ds.batch(args.batch_size).prefetch(tf.data.AUTOTUNE)
+
+
+
+def generateimg(img):
+    size = list(img)
     fig = plt.figure(figsize=(4, 4))
 
-    for i in range(5):
+    for i in range(4):
         plt.subplot(4, 4, i + 1)
-        plt.imshow(np.uint8(pic[i, :, :, :] * 255))
+        plt.imshow(np.uint8(img[i, :, :, :] * 255))
         plt.axis('off')
+
     plt.show()
 
+def time1():
+    time1=time
+    print(time1)
+    return time1
+def time2():
+    time2=time
+    print(time2)
+    return time2
 
+def time3():
+    time3=time
+    print(time3)
+    return time3
 #size of the image
 
-#generateimg(x_val)
+generateimg(train_x)
 
 
 def show(epoch, trained_gen):
-    real_images = x_val[0:5]
+    real_images = train_x[0:5]
 
     fake = trained_gen.predict(real_images, training=False)
 
@@ -295,16 +373,35 @@ class prep_att(layers.Layer):
         return x
 
 
+class size2(layers.Layer):
+    def __init__(self):
+        super(size2, self).__init__()
+
+    def call(self, x):
+        print(f"Size2 of the image in bytes {sys.getsizeof(x)}")
+        # size2=sys.getsizeof(x)
+        return x
+
 class size(layers.Layer):
     def __init__(self):
         super(size, self).__init__()
 
     def call(self, x):
-        print(f"Size of the image in bytes {sys.getsizeof(x)}")
+        y=x
+
+        #size1(y)
+        print(f"Size of the image in bytes {y.element_size()*y.size}")
 
         return x
 
+class timeg(layers.Layer):
+    def __init__(self):
+        super(timeg, self).__init__()
 
+    def call(self, x):
+        print(f"time {time.ctime()}")
+
+        return x
 class noise(layers.Layer):
     def __init__(self, latent_dim):
         super(noise, self).__init__()
@@ -313,8 +410,8 @@ class noise(layers.Layer):
 
     def call(self, x):
         batch_size = tf.shape(x)[0]
-        print(f"get size of tensor {x.size}")
-        print(f"get the size in bytes {sys.getsizeof(x)}")
+
+
         print(f"get the size {sys.getsizeof(x[1])}")
         random_latent_vector1 = tf.random.normal(shape=(batch_size, 4, self.latent_dim))
         # random_latent_vector1 = random_latent_vector1.astype("uint8")
@@ -412,55 +509,61 @@ class upsample(layers.Layer):
 generator = keras.Sequential(
     [
         # Input after data preparation
-        keras.layers.InputLayer(input_shape=(32, 32, 3)),
+        timeg(),
+        #size(),
+        keras.layers.InputLayer(input_shape=(args.image_size, args.image_size,args.num_channels)),
         # layers.BatchNormalization(),
         # Start of the encoding
         # prepare the image
 
-        data_augmentation,
+        #data_augmentation,
 
         # project patches
         project_patches(args.mlp_dim, args.patch_size),
 
         # add positional embedding to the tokens
         position_embedding(num_patches, args.projection_dim),
-        # size(),
+        #size(),
         # Dropout for better performance
         layers.Dropout(args.dropout),
 
-        # Add transfomer Layer
-        transformer(args.num_heads, args.mlp_dim, args.dropout),
-        transformer(args.num_heads, args.mlp_dim, args.dropout),
+        # # Add transfomer Layer
+        # transformer(args.num_heads, args.mlp_dim, args.dropout),
+        # transformer(args.num_heads, args.mlp_dim, args.dropout),
+        # transformer(args.num_heads, args.mlp_dim, args.dropout),
+        # transformer(args.num_heads, args.mlp_dim, args.dropout),
         layers.LayerNormalization(),
         prep_att(),
 
         attention_map(args.num_tokens, args.layer_norm),
+        #noise(args.latent_dim),
+        #size(),
 
-        # size(),
         transformer(args.num_heads, args.mlp_dim, args.dropout),
         transformer(args.num_heads, args.mlp_dim, args.dropout),
-        transformer(args.num_heads, args.mlp_dim, args.dropout),
-        # size(),
 
-        noise(args.latent_dim),
+        transformer(args.num_heads, args.mlp_dim, args.dropout),
+        #size(),
+        timeg(),
+
 
 
 
 
 
         # rebuilding the image
-        layers.Dense(1024, use_bias=False),
+        layers.Dense(2048, use_bias=False),
         layers.Reshape((4, 4, 512)),
         #ReflectionPadding2D(padding=(3,3)),
         residual_block(activation=layers.Activation("relu")),
         residual_block(activation=layers.Activation("relu")),
         residual_block(activation=layers.Activation("relu")),
         residual_block(activation=layers.Activation("relu")),
-        # residual_block(activation=layers.Activation("relu")),
-        # residual_block(activation=layers.Activation("relu")),
-        # residual_block(activation=layers.Activation("relu")),
-        # residual_block(activation=layers.Activation("relu")),
-        # residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
+        residual_block(activation=layers.Activation("relu")),
 
 
 
@@ -478,9 +581,11 @@ generator = keras.Sequential(
         upsample(32, activation=layers.Activation("relu")),
         #
 
-        # Outputlayer
-        layers.Conv2D(3, (7, 7), padding="same", activation="sigmoid"),
 
+        # Outputlayer
+        layers.Conv2D(3, (8, 8), padding="same", activation="sigmoid"),
+        timeg(),
+        #size(),
     ],
     name="generator",
 )
@@ -489,49 +594,55 @@ generator = keras.Sequential(
 discriminator = keras.Sequential(
     [
         keras.layers.InputLayer((32, 32, 3)),
-        layers.Conv2D(64, (3, 3), strides=(2, 2), padding="same"),
+        layers.Conv2D(64, (4, 4), strides=(2, 2), padding="same"),
         layers.LeakyReLU(alpha=0.2),
-        layers.BatchNormalization(),
+        tfa.layers.InstanceNormalization(),
 
-        layers.Conv2D(128, (3, 3), strides=(2, 2), padding="same"),
+        layers.Conv2D(128, (4, 4), strides=(2, 2), padding="same"),
         layers.LeakyReLU(alpha=0.2),
-        layers.BatchNormalization(),
+        tfa.layers.InstanceNormalization(),
 
-        layers.Conv2D(256, (3, 3), strides=(2, 2), padding="same"),
+        layers.Conv2D(256, (4, 4), strides=(2, 2), padding="same"),
         layers.LeakyReLU(alpha=0.2),
-        layers.BatchNormalization(),
+        tfa.layers.InstanceNormalization(),
 
-        layers.GlobalMaxPooling2D(),
-        layers.Dense(1),
+        layers.Conv2D(512, (4, 4), strides=(2, 2), padding="same"),
+        layers.LeakyReLU(alpha=0.2),
+        tfa.layers.InstanceNormalization(),
+
+        #layers.GlobalMaxPooling2D(),
+        layers.Conv2D(1, (4,4), strides=1, padding='same'),
+        #layers.Activation('sigmoid')
+
     ],
     name="discriminator",
 )
 
 #GEt generators
-gen_G = generator
+
 gen_F = generator
 
 # Get the discriminators
 disc_X = discriminator
-disc_Y = discriminator
+
 
 
 
 class CycleGan(keras.Model):
     def __init__(self,
-        generator_G,
+
         generator_F,
         discriminator_X,
-        discriminator_Y,
+
         lambda_cycle=10.0,
         lambda_identity=0.5,):
 
 
         super(CycleGan, self).__init__()
-        self.gen_G = generator_G
+
         self.gen_F = generator_F
         self.disc_X = discriminator_X
-        self.disc_Y = discriminator_Y
+
         self.lambda_cycle=lambda_cycle
         self.lambda_identity=lambda_identity
         self.latent_dim = args.latent_dim
@@ -553,89 +664,60 @@ class CycleGan(keras.Model):
 
     def compile(
             self,
-            gen_G_optimizer,
+
             gen_F_optimizer,
             disc_X_optimizer,
-            disc_Y_optimizer,
+
             gen_loss_fn,
             disc_loss_fn,
     ):
         super(CycleGan, self).compile()
-        self.gen_G_optimizer = gen_G_optimizer
+
         self.gen_F_optimizer = gen_F_optimizer
         self.disc_X_optimizer = disc_X_optimizer
-        self.disc_Y_optimizer = disc_Y_optimizer
+
         self.generator_loss_fn = gen_loss_fn
         self.discriminator_loss_fn = disc_loss_fn
-        self.cycle_loss_fn = keras.losses.MeanAbsoluteError()
+
         self.identity_loss_fn = keras.losses.MeanAbsoluteError()
 
     def train_step(self, data):
         # Unpack the data.
-        real_x, real_y= data
+        real_x= data
 
         with tf.GradientTape(persistent=True) as tape:
             # Real to fake img
-            fake_y = self.gen_G(real_x, training=True)
+            # fake_y = self.gen_G(real_x, training=True)
             # Fake to real img
             fake_x = self.gen_F(real_x, training=True)
 
-            # Cycle (Horse to fake zebra to fake horse): x -> y -> x
-            cycled_x = self.gen_F(fake_y, training=True)
-            # Cycle (Zebra to fake horse to fake zebra) y -> x -> y
-            cycled_y = self.gen_G(fake_x, training=True)
 
-            # Identity mapping
-            same_x = self.gen_F(real_x, training=True)
-            same_y = self.gen_G(real_x, training=True)
 
-            # Discriminator output
+            id_loss = (
+                    self.identity_loss_fn(real_x, fake_x)
+                    * self.lambda_cycle
+                    * self.lambda_identity
+            )
+
+            gen_F_loss = id_loss+generator_loss_fn(fake_x)
+
             disc_real_x = self.disc_X(real_x, training=True)
             disc_fake_x = self.disc_X(fake_x, training=True)
 
-            disc_real_y = self.disc_Y(real_x, training=True)
-            disc_fake_y = self.disc_Y(fake_y, training=True)
 
-            # Generator adverserial loss
-            gen_G_loss = self.generator_loss_fn(disc_fake_y)
-            gen_F_loss = self.generator_loss_fn(disc_fake_x)
 
-            # Generator cycle loss
-            cycle_loss_G = self.cycle_loss_fn(real_x, cycled_y) * self.lambda_cycle
-            cycle_loss_F = self.cycle_loss_fn(real_x, cycled_x) * self.lambda_cycle
-
-            # Generator identity loss
-            id_loss_G = (
-                    self.identity_loss_fn(real_x, same_y)
-                    * self.lambda_cycle
-                    * self.lambda_identity
-            )
-            id_loss_F = (
-                    self.identity_loss_fn(real_x, same_x)
-                    * self.lambda_cycle
-                    * self.lambda_identity
-            )
-
-            # Total generator loss
-            total_loss_G = gen_G_loss + cycle_loss_G + id_loss_G
-            total_loss_F = gen_F_loss + cycle_loss_F + id_loss_F
-
-            # Discriminator loss
             disc_X_loss = self.discriminator_loss_fn(disc_real_x, disc_fake_x)
-            disc_Y_loss = self.discriminator_loss_fn(disc_real_y, disc_fake_y)
 
-        # Get the gradients for the generators
-        grads_G = tape.gradient(total_loss_G, self.gen_G.trainable_variables)
-        grads_F = tape.gradient(total_loss_F, self.gen_F.trainable_variables)
+        grads_F = tape.gradient(gen_F_loss, self.gen_F.trainable_variables)
 
         # Get the gradients for the discriminators
         disc_X_grads = tape.gradient(disc_X_loss, self.disc_X.trainable_variables)
-        disc_Y_grads = tape.gradient(disc_Y_loss, self.disc_Y.trainable_variables)
+        # disc_Y_grads = tape.gradient(disc_Y_loss, self.disc_Y.trainable_variables)
 
         # Update the weights of the generators
-        self.gen_G_optimizer.apply_gradients(
-            zip(grads_G, self.gen_G.trainable_variables)
-        )
+        # self.gen_G_optimizer.apply_gradients(
+        #     zip(grads_G, self.gen_G.trainable_variables)
+        # )
         self.gen_F_optimizer.apply_gradients(
             zip(grads_F, self.gen_F.trainable_variables)
         )
@@ -644,15 +726,15 @@ class CycleGan(keras.Model):
         self.disc_X_optimizer.apply_gradients(
             zip(disc_X_grads, self.disc_X.trainable_variables)
         )
-        self.disc_Y_optimizer.apply_gradients(
-            zip(disc_Y_grads, self.disc_Y.trainable_variables)
-        )
+        # self.disc_Y_optimizer.apply_gradients(
+        #     zip(disc_Y_grads, self.disc_Y.trainable_variables)
+        # )
 
         return {
-            "G_loss": total_loss_G,
-            "F_loss": total_loss_F,
+            "G_loss": gen_F_loss,
+
             "D_X_loss": disc_X_loss,
-            "D_Y_loss": disc_Y_loss,
+
         }
 
 class GANMonitor(keras.callbacks.Callback):
@@ -662,32 +744,38 @@ class GANMonitor(keras.callbacks.Callback):
         self.num_img = num_img
 
     def on_epoch_end(self, epoch, logs=None):
-        _, ax = plt.subplots(4, 2, figsize=(12, 12))
-        for i, img in enumerate(x_val.take(self.num_img)):
-            prediction = self.model.gen_G(img)[0].numpy()
-            prediction = (prediction * 255).astype(np.uint8)
-            img = (img[0] * 255).numpy().astype(np.uint8)
 
-            ax[i, 0].imshow(img)
-            ax[i, 1].imshow(prediction)
-            ax[i, 0].set_title("Input image")
-            ax[i, 1].set_title("Translated image")
-            ax[i, 0].axis("off")
-            ax[i, 1].axis("off")
+        if epoch%5==0:
+            _, ax = plt.subplots(4, 2, figsize=(12, 12))
 
-            prediction = keras.preprocessing.image.array_to_img(prediction)
-            prediction.save(
-                "generated_img_{i}_{epoch}.png".format(i=i, epoch=epoch + 1)
-            )
+            for i in range(1):
+                img = test_x
+                prediction = cy_gan.gen_F(img)[0].numpy()
+                prediction = (prediction * 255).astype(np.uint8)
+                img = (img[0] * 255).numpy().astype(np.uint8)
+
+                ax[i, 0].imshow(img)
+                ax[i, 1].imshow(prediction)
+                ax[i, 0].set_title("Input image")
+                ax[i, 1].set_title("Translated image")
+                ax[i, 0].axis("off")
+                ax[i, 1].axis("off")
+
+                prediction = keras.preprocessing.image.array_to_img(prediction)
+                prediction.save(
+                    "   generated_img_{i}_{epoch}.png".format(i=i, epoch=epoch + 1)
+                )
         plt.show()
         plt.close()
 
 
 adv_loss_fn = keras.losses.MeanSquaredError()
-# adv_loss_fn=tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits())
+
+#adv_loss_fn=tf.reduce_mean()
 
 def generator_loss_fn(fake):
     fake_loss = adv_loss_fn(tf.ones_like(fake), fake)
+    # fake_loss = tf.reduce_mean(tf.square(fake - 1.))
     return fake_loss
 
 
@@ -695,36 +783,38 @@ def generator_loss_fn(fake):
 def discriminator_loss_fn(real, fake):
     real_loss = adv_loss_fn(tf.ones_like(real), real)
     fake_loss = adv_loss_fn(tf.zeros_like(fake), fake)
+    # real_loss=tf.reduce_mean(tf.square(real - 1.))
+    # fake_loss =tf.reduce_mean(tf.square(fake - 1.))
     return (real_loss + fake_loss) * 0.5
 
 cy_gan = CycleGan(
-    generator_G=gen_G, generator_F=gen_F, discriminator_X=disc_X, discriminator_Y=disc_Y)
+     generator_F=gen_F, discriminator_X=disc_X)
 
 cy_gan.compile(
-    gen_G_optimizer=keras.optimizers.Adam(learning_rate=2e-4, beta_1=0.5),
+
     gen_F_optimizer=keras.optimizers.Adam(learning_rate=2e-4, beta_1=0.5),
     disc_X_optimizer=keras.optimizers.Adam(learning_rate=2e-4, beta_1=0.5),
-    disc_Y_optimizer=keras.optimizers.Adam(learning_rate=2e-4, beta_1=0.5),
+
     gen_loss_fn=generator_loss_fn,
     disc_loss_fn=discriminator_loss_fn,
 )
 
 plotter = GANMonitor()
 checkpoint_filepath = "./logs/train.{epoch:03d}"
-model_checkpoint_callback = keras.callbacks.ModelCheckpoint(
+cy_gan_checkpoint_callback = keras.callbacks.ModelCheckpoint(
     filepath=checkpoint_filepath)
-# cy_gan.build(input_shape=(32,32,3))
-cy_gan.fit(
-    val_ds,
-    epochs=1,
 
-    #callbacks=[plotter, model_checkpoint_callback]
+cy_gan.fit(
+    train_x,
+    epochs=100,
+
+    #callbacks=[plotter, cy_gan_checkpoint_callback]
 )
 
 
 #Summary
 
-cy_gan.gen_G.summary()
+cy_gan.gen_F.summary()
 
 cy_gan.disc_X.summary()
 
@@ -732,16 +822,15 @@ cy_gan.disc_X.summary()
 
 # We first extract the trained generator from our Conditional GAN.
 # and the input for the generator
-trained_gen = cy_gan.gen_G
-trained_gen2=cy_gan.gen_F
+
+trained_gen=cy_gan.gen_F
 
 
 
-
-fake = trained_gen.predict(x_val)
-
+#cy_gan.gen_G.save('./logs/models')
+fake = trained_gen.predict(train_x)
+#trained_gen.predict(train_x).save("newmodel")
+# benchmarking(size1, size2,time1,time2,time3)
 generateimg(fake)
-
-
 
 
